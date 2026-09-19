@@ -14,8 +14,9 @@ criterion. Two-dimensional Lagrangian explicit FEM, 4-node quads, central-differ
 integration, full or reduced quadrature, J2 plasticity with combined isotropic and kinematic
 hardening, Johnson–Cook flow stress with adiabatic thermal softening, updated Lagrangian
 kinematics with an objective stress update, a rigid anvil with a Coulomb cone, a threaded
-kernel that is bit-for-bit identical at any thread count, and a mesh-independent Weibull defect
-field. 197 tests green.
+kernel that is bit-for-bit identical at any thread count, a mesh-independent Weibull defect
+field, and progressive softening regularised by fracture energy per unit crack area. 218 tests
+green.
 
 Every conservation audit on the Taylor case is exact or converging. Three findings shaped it,
 and none of them were the one expected going in:
@@ -48,13 +49,28 @@ not the 4.1 s this file used to claim — and the 2–10 s it was being compared
 plan's wall clock for *one GPU*, so a CPU was never supposed to reach it. The cost model
 itself survives intact: seconds, not minutes. See [gate 2](#gate-2--the-cost-model).
 
-**M2's first half is in: the defect field exists, it is mesh-independent, and its size effect
-matches weakest-link theory to 0.2 %.** One float per element. The plan names one trap here and
-it is real, but there is a **second one facing the other way** that only shows up if you
-actually run the refinement study: volume normalisation on its own makes the part *stronger*
-without bound as the mesh refines, 35 % over a thousandfold, because below the correlation
-length neighbouring elements are not independent chances. Nothing in the solver reads the field
-yet. See [M2](#m2--the-defect-field).
+**M2 is complete, and the two most interesting things in it were not in the plan.** The defect
+field is mesh-independent and its size effect matches weakest-link theory to 0.2 %; the solver
+reads it; the same tube now bursts at six pressures in six places. Along the way:
+
+- **Volume normalisation on its own makes the part *stronger* without bound as the mesh
+  refines** — 35 % over a thousandfold — because below the correlation length neighbouring
+  elements are not independent chances. The plan names one trap here; this is a second one,
+  facing the flattering way, which survives any test phrased as "must not get weaker".
+- **A pressurised shell averages its defects rather than failing at its weakest link.** Over an
+  eightfold change in tube length the mean burst pressure is flat while the scatter falls as
+  L^(−0.40) — neither of the two things Weibull theory predicts. The governing length is the
+  shell's shear-lag length `√(Rt)`, and pushing the field's correlation length through it turns
+  the behaviour over exactly as that argument says. Along its axis a tube is a bundle of
+  parallel rings, not a chain.
+- **The burst pressure does not converge under mesh refinement**: +0.22 % per doubling,
+  monotone, heading for the defect-free answer. Crack-band regularisation makes the fracture
+  *energy* exact to 1e-10 and it does that by making the softening *modulus* mesh-dependent,
+  which is only right once the band has localised. Here the load maximum arrives first. The
+  number is reported rather than smoothed.
+
+See [M2](#m2--the-defect-field) and
+[M2's second half](#m2s-second-half--what-the-solver-does-with-it).
 
 ```
 ./gradlew run     # the M0 report
@@ -772,11 +788,175 @@ that forming `x/√2` by multiplying by the rounded reciprocal, rather than divi
 answer by 1e-13 relative at 30σ. The logarithmic derivative of erfc is about −2x. That is
 argument sensitivity, not approximation error, and there is a test that says so.
 
-#### What is not done
+### M2's second half — what the solver does with it
 
-Nothing in the solver reads this number. Failure and the scattered burst pressure it should
-produce are M2's second half, and the softening that carries them is where the mesh dependence
-comes back — see [Next](#next).
+The field is one number per element; this is the part that lets it matter. Damage enters as
+**progressive softening** — the charter forbids binary failure, so nothing is deleted and
+nothing switches off. Once accumulated plastic strain reaches an element's failure strain, the
+flow stress is frozen at whatever it had reached and then falls linearly to zero.
+
+**Damage is negative hardening, and that is the whole implementation.** There is no damage
+variable in the state and no second constitutive branch: the frozen flow stress and the
+softening slope take the places that `sy0 + hIso·εp` and `hIso` occupy for an undamaged point,
+and every line of the return map after that is unchanged. Freezing buys three things at once —
+the softening branch becomes exactly triangular, so its energy has a closed form rather than an
+accumulator; the return stays closed-form **even for Johnson–Cook**, because a frozen flow
+stress removes the nonlinearity that the bracketed Newton solve exists for; and the fracture
+energy stops depending on strain rate and temperature, which is the point, since G_f is meant
+to be a material constant.
+
+#### The band width is not the square root of the area
+
+Softening localises — that is what a negative tangent does — and in an explicit solve the band
+is exactly one element wide whatever the mesh. So a fixed softening slope would make the energy
+to break the part go to zero as the mesh refined. Hillerborg's fix is to fix the energy per unit
+**crack area** and let the slope follow the element: `H_soft = −σ_f²·h / 2G_f`.
+
+That makes `h` the whole question, and the usual shortcut of `sqrt(A)` is the element's band
+width only if it is square. A tube wall is meshed thin in r and long in z; 10:1 is ordinary, and
+`sqrt(A)` is out by the square root of that — a factor of three, in the flattering direction,
+indistinguishable from the regularisation working. So the orientation comes from the physics
+instead: at onset the plastic flow direction's largest in-plane principal direction is where
+the material is stretching hardest and therefore where it will open, and with `t` along the band
+and `u, v` the element's mean edge vectors,
+
+```
+h = A / (|u·t| + |v·t|)
+```
+
+exact for any parallelogram. Across a rectangle it returns the other side; diagonally across a
+square it returns `a/√2`, not the support width `a√2`, which is the mistake that looks right
+until the band is at 45°.
+
+An element here is a ring, so it is worth checking this is still a length. Ring volume is
+`2πrA` and a circumferential crack through it has area `2πrL`, so `G_f = g_f·A/L` and **the
+radius cancels on both sides**. A ring at 100 mm and a ring at 1 mm with the same cross-section
+cost the same per unit area to break, which is what a material constant has to mean.
+
+One case is genuinely undetermined and it is worth knowing why. A thin open-ended tube has all
+its load in the hoop, so the flow direction's in-plane part is isotropic and there is no
+preferred meridian direction at all. That is the model telling the truth: the crack that wants
+to form is a longitudinal split, and an axisymmetric formulation has none. Below 1e-9 of
+anisotropy it falls back to `sqrt(A)`.
+
+Under full integration all four Gauss points are handed the **element's** geometry, not a
+quarter each. Giving each point its own quarter-sized band is the obvious thing and it is wrong:
+a bilinear quad cannot represent a strain discontinuity in its interior, so the narrowest band
+the mesh can resolve is one element across however many points sample it. Sizing off the point
+would let one element host two parallel cracks in each direction and dissipate twice — a
+quadrature rule changing the fracture toughness. Full and reduced integration agree on the
+energy to 1e-10, and that is the test.
+
+#### The size limit, clamped and counted
+
+The element's total response — elastic unloading plus softening — has to stay monotone, or the
+branch snaps back and the element cannot be driven through it at all: `h ≤ 2E·G_f/σ_f²`. It
+cannot be checked at construction, because σ_f includes however much the material hardened on
+the way, so it is checked at onset, clamped at `H_soft = −E`, and **counted**. A clamped point
+dissipates more than G_f and its mesh independence is gone; reporting the count is the
+difference between knowing that and not. The clamp is also what keeps the return map
+non-singular — the worst denominator is `2μ − (2/3)E`, positive for every ν < 0.5 and vanishing
+exactly at 0.5, which `Material` already refuses.
+
+#### What holds exactly
+
+A through-wall ring crack costs `G_f × π(r_o² − r_i²)` — to **1e-10**, at 2, 4 and 8 elements
+through the wall, and across an eightfold axial refinement. The 2πr cancels, the annulus area
+does not depend on how many elements span it, and neither does the energy. The solver's own
+running total undershoots the closed form by exactly one step in n, a right Riemann sum of a
+straight line, and that is asserted as `1/n` rather than absorbed into a tolerance.
+
+#### The result, and the two things that were not in the plan
+
+Six nominally identical tubes, seed the only difference: **16.648 to 16.920 MPa, failing at six
+different axial stations.** That is the plan's claim and it holds.
+
+**A pressurised shell averages its defects instead of failing at its weakest link.** Weibull
+weakest-link theory — all of `Weibull`, all of `DefectField` — predicts that a longer body is
+weaker and that its scatter is size-independent, because the minimum of n Weibulls is Weibull
+with the same modulus. Neither happens:
+
+| Tube length | L/√(Rt) | of defect-free | scatter | failure location, sd/L |
+| --- | --- | --- | --- | --- |
+| 10 mm | 1.41 | 0.9354 | 0.933 % | 0.226 |
+| 20 mm | 2.83 | 0.9280 | 0.742 % | 0.377 |
+| 40 mm | 5.66 | 0.9293 | 0.526 % | 0.284 |
+| 80 mm | 11.31 | 0.9298 | 0.408 % | 0.270 |
+
+The mean holds still and the scatter falls as **L^(−0.40)** — against L^(−1/2) for an average
+over independent patches and L^0 for a weakest link, which is much nearer the first. (The last
+column is the spread of the failure location as a fraction of the tube; 0.289 is what a uniform
+distribution over the whole length gives, so the field is choosing and the boundaries are not.)
+The reason is the **shear-lag length**
+`√(Rt)` = 7.07 mm — the distance over which a thin shell shares load along its axis. Every weak
+patch here is 3 mm long, so the neighbours carry it. Pushing the correlation length up through
+`√(Rt)` turns the behaviour over exactly as that argument predicts: on an 80 mm tube, at 2, 4,
+8, 16 and 32 mm it holds 0.9373, 0.9262, 0.9140, 0.9019 and 0.8905 of the defect-free pressure,
+monotonically weaker, with the scatter climbing 0.46 %, 0.60 %, 0.88 %, 1.59 % and then 1.33 %
+— that last figure is five draws from a tube containing two and a half patches and is noise,
+not a turn. **Along its axis this tube is a bundle of parallel
+rings, not a chain.** Through its wall it is a chain, which is why refining through the wall
+changes nothing. The weakest-link apparatus is right about the material and describes only part
+of the structure it is put into, and which part depends on a length scale that belongs to the
+geometry.
+
+#### The burst pressure does not converge
+
+| Elements | Δz | Burst | of defect-free |
+| --- | --- | --- | --- |
+| 160 | 1.000 mm | 16.880 MPa | 0.9316 |
+| 320 | 0.500 mm | 16.923 MPa | 0.9340 |
+| 640 | 0.250 mm | 16.955 MPa | 0.9358 |
+| *no field* | — | 18.031 MPa | 0.9952 |
+
+**+0.22 % per mesh doubling, monotone, no plateau, heading for the last line.** What evaporates
+under refinement is the knockdown itself.
+
+Crack-band regularisation fixes the energy per unit crack area — exactly, to 1e-10, and that
+identity holds — but it fixes it by making the softening *modulus* depend on the element size,
+and that is only the right thing to do once the band has localised into one element. Here the
+load maximum arrives while damage is still diffuse, so a finer mesh softens more slowly at the
+same strain and the tube comes out stronger. One doubling moves the answer by about 40 % of the
+0.53 % scatter it is meant to be measuring: the ranking between two tubes survives refinement,
+the absolute knockdown does not.
+
+This is the second mesh dependence in M2 pointing the flattering way, and the mirror of the
+first. Volume normalisation made the part stronger as the mesh refined because it credited
+correlated elements with independent chances; this makes the part stronger as the mesh refines
+because it credits a narrower band with a longer softening range. The fix is a softening modulus
+that is a material constant until localisation is detected and regularised only after it, or a
+nonlocal damage model. Neither is in this increment, and the number is printed rather than
+smoothed.
+
+#### What this damage model does not have
+
+**Triaxiality.** The failure strain is a property of the material and the defect field and
+nothing else. Real ductile failure strain falls roughly exponentially with stress triaxiality,
+and a pressurised wall spans a wide range of it between bore and outside, so the bore should
+fail earlier than this makes it. Until that is in, *where* a part fails is set by the defect
+field alone where it ought to be set by the defect field and the stress state together.
+
+**Loss of hydrostatic strength.** Only the flow stress is degraded, so a fully damaged element
+has no shear strength but still resists volume change: it is a fluid, not a crack. For a
+bursting wall that is enough — the wall fails by losing hoop capacity and thinning, and hoop
+tension is deviatoric. It also keeps plastic flow exactly isochoric, which is what the plastic
+dissipation audit rests on. For anything that needs a traction-free surface to open, it is not
+enough.
+
+**And for a real ductile metal this whole mechanism is a footnote.** Annealed copper's ductility
+is several times its instability strain, so the instability wins outright and the measured
+effect of a defect field is a 0.6 % knockdown with 0.06 % scatter. The runs above use a failure
+strain set below the instability on purpose, to have something to show. That is a statement
+about what is being demonstrated, not about copper.
+
+#### The axisymmetric price
+
+One thing this cannot represent, and it is the thing a real tube actually does. A burst tube
+splits **longitudinally**. Axisymmetry admits only circumferential cracks, so what this models
+is the wall losing its hoop capacity and bulging, not the split that follows. The localisation
+is a bulge and not a neck for a second reason as well: with ε_z = 0 the wall can expand unevenly
+along z, because neighbouring rings may move by different amounts, but it cannot draw material
+along the tube into the neck.
 
 ## Layout
 
@@ -798,6 +978,9 @@ solver/   ExplicitSolver — the hot loop
           Kinematics — small strain or updated Lagrangian
           J2 — radial-return plasticity; closed form for linear hardening,
               bracketed Newton for Johnson-Cook. J2.Flow bundles the uniforms
+          Damage — progressive softening as a NEGATIVE hardening modulus, so the
+              return map needs no second branch; the band width comes from the
+              flow direction, and the snap-back clamp is counted rather than hidden
           Corotational — objective incremental rotation
           RigidWall — kinematic anvil with a Coulomb cone; stick/slip is a
               return map, same shape as J2
@@ -807,6 +990,9 @@ validate/ Lamé and ElasticPlastic closed forms, the cylinder cases,
                   Barlow, and the elastic correction to a rigid-plastic oracle
               BurstCase — traverses the load maximum and measures the wall's
                   capacity rather than the pressure applied to it
+              DefectBurst — the same tube many times over; Setup varies one named
+                  thing, volley pools a population, shearLagLength is the number
+                  the correlation length has to be compared against
               MeshConvergence — Richardson extrapolation and the GCI band
 ```
 
@@ -948,42 +1134,45 @@ project is about. Offline solve is what buys the right to refuse it.
 
 ## Next
 
-1. **M2's second half — let the solver read the field.** The field is built, tested and
-   mesh-independent; nothing in `ExplicitSolver` looks at it. What it needs is a damage variable
-   per element driven by the ratio of accumulated plastic strain to that element's local failure
-   strain, and the charter's ban on binary failure means it has to enter as **progressive
-   softening**, not deletion — an element that has reached its failure strain stops carrying
-   deviatoric stress over some finite strain rather than vanishing between two timesteps.
-   Softening is the part that needs care: it makes the tangent negative, which is exactly the
-   regime where an explicit solve localises into one element and the answer becomes the mesh.
-   The standard fix is to regularise by fracture energy per unit area rather than per unit
-   volume, so the softening slope depends on the element size — and that lands in the same
-   territory as the resolution floor already in `DefectField.effectiveVolume`. The payoff is
-   the plan's actual claim: the same tube, run twice, bursts at two different pressures and in
-   two different places.
-2. **The 0.04 % nobody has accounted for in burst.** It is independent of wall thickness and
+1. **Make the burst pressure converge.** The one open defect in M2. Crack-band regularisation
+   makes the fracture energy exact and mesh-independent, and it does that by making the
+   softening *modulus* a function of the element size — which is correct once the band has
+   localised into one element and wrong before it. The burst peak here arrives while damage is
+   still diffuse, so refinement buys back +0.22 % of strength per doubling with no plateau. The
+   two standard cures are a two-stage law — a softening modulus that is a genuine material
+   constant up to a detected localisation, crack-band only after it — or a nonlocal / gradient
+   damage model, which replaces the element-size length with a real material length and makes
+   the whole question go away. The second is the better answer and the larger job.
+2. **Triaxiality in the failure strain** (Johnson–Cook D1–D5). Right now *where* a part fails is
+   decided by the defect field alone. Real ductile failure strain falls roughly exponentially
+   with stress triaxiality, and a pressurised wall spans a wide range of it between bore and
+   outside surface — so the bore ought to be failing earlier than this model lets it, and the
+   competition between "weakest spot" and "most severely stressed spot" is missing entirely.
+3. **The 0.04 % nobody has accounted for in burst.** It is independent of wall thickness and
    of loading rate — both checked — so it is neither the thin-wall assumption nor the harness.
    The standing suspect is that the elastic response is *hypoelastic*, a rate form integrated
    along the path, whose departure from an exact hyperelastic law is of order elastic strain ×
    total strain: 0.002 × 0.1, which is the size observed. That is a hypothesis with the right
    magnitude and the right invariances, not a measurement. Settling it means a hyperelastic
    volumetric split, which is wanted anyway before anything is trusted past ~50 % strain.
-3. **The pressure–volume curve as an output, not just its peak.** The burst harness already
+4. **The pressure–volume curve as an output, not just its peak.** The burst harness already
    traces `P(ε_θ)` through the maximum and throws all of it away but one point. That curve *is*
    the bulge-as-positive-feedback story the charter promises, and it is the first thing in this
    project a person could be shown rather than told.
-4. **The GPU port**, which is the only thing still holding gate 2 open, and which now has a
+5. **The GPU port**, which is the only thing still holding gate 2 open, and which now has a
    target rather than an aspiration: 1.6–7.8× over ten CPU threads on a bandwidth-bound kernel.
 
 Known gaps, deliberate: plane-stress plasticity is not implemented (enforcing σ_zz = 0 through
 a return map is a different algorithm, and nothing in the validation program needs it — the
 solver refuses the combination rather than silently solving plane strain). Contact is a rigid
 plane -- Coulomb friction is in, but the plan's penalty model for deformable-on-deformable
-pairs is not, and nothing before M5 needs it. Johnson–Cook **damage** (D1–D5) is not in — no case before
-M5 reaches it, and the charter's ban on binary failure means it has to arrive as progressive
-softening rather than deletion. Plastic dissipation is integrated against reference element
-volumes, which is exact only because this return map is exactly isochoric — that argument
-stops holding for volumetric plasticity or damage.
+pairs is not, and nothing before M5 needs it. Johnson–Cook **damage** (D1–D5) is not in — the
+failure strain comes from the defect field and carries no triaxiality dependence, which is item
+2 above. Plastic dissipation is integrated against reference element volumes, which is exact
+only because this return map is exactly isochoric — and `Damage` does not break that, because
+softening scales the *size* of the yield surface and leaves the flow direction alone. A model
+with volumetric plasticity, or one that degraded the hydrostatic response so a crack could open
+traction-free, would break it.
 
 ## Build notes
 
