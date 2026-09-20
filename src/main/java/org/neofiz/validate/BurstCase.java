@@ -8,6 +8,9 @@ import org.neofiz.solver.ExplicitSolver;
 import org.neofiz.solver.Integration;
 import org.neofiz.solver.Kinematics;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * The second half of the M1 gate: a pressurised tube taken past its burst pressure, compared
  * against {@link Burst}.
@@ -140,6 +143,34 @@ public final class BurstCase {
     public static final Material COPPER =
             Material.COPPER_OFHC.withJohnsonCook(JohnsonCook.COPPER_OFHC.quasiStatic());
 
+    /**
+     * One point on the pressure-expansion curve, sampled every {@link #SAMPLE_STEPS} steps.
+     *
+     * <p>The run has always computed these and kept only the peak. It is the curve, not the
+     * peak, that carries the physics: an elastic rise, a knee where the bore surface yields,
+     * a plateau where hardening and geometric self-weakening are trading, and a turnover
+     * where hardening loses. The peak is one number off the top of that story.
+     *
+     * <p>{@code capacity} is the wall's own load capacity from {@link #loadCapacity}, which
+     * is what "the pressure this tube can hold" means on both sides of the maximum;
+     * {@code applied} is the ramp's bore pressure, which tracks it up the stable branch and
+     * then sits on its ceiling while the capacity falls away. Plotting both is what makes
+     * the instability legible rather than asserted -- the gap between them past the peak is
+     * the unbalanced force that is accelerating the wall outward.
+     *
+     * @param time              solver time, seconds
+     * @param hoopStrain        logarithmic mid-wall hoop strain, the closed form's abscissa
+     * @param capacity          the wall's load capacity, Pa
+     * @param applied           bore pressure the ramp is applying, Pa
+     * @param kineticOverStrain kinetic energy over strain energy; the quasi-static audit
+     * @param maxPlasticStrain  largest equivalent plastic strain anywhere in the wall
+     * @param yieldedFraction   fraction of the wall currently flowing; locates the knee
+     */
+    public record Sample(double time, double hoopStrain, double capacity, double applied,
+                         double kineticOverStrain, double maxPlasticStrain,
+                         double yieldedFraction) {
+    }
+
     public record Result(
             Integration integration,
             Kinematics kinematics,
@@ -166,7 +197,8 @@ public final class BurstCase {
             double maxPlasticStrain,
             double finalHoopStrain,
             int steps,
-            double wallClockSeconds) {
+            double wallClockSeconds,
+            List<Sample> trace) {
 
         /**
          * The measured burst pressure, or an explanation of why there is not one.
@@ -233,6 +265,26 @@ public final class BurstCase {
                                 + "so no instability"));
             }
             return burstPressureFem;
+        }
+
+        /**
+         * Index into {@link #trace} of the sample the burst pressure was read from, or
+         * {@code -1} for a run with no peak in it.
+         *
+         * <p>Found by scanning rather than recorded during the run, so that it cannot drift
+         * out of agreement with the trace it indexes.
+         */
+        public int peakIndex() {
+            if (!traversedPeak) return -1;
+            int best = -1;
+            double most = Double.NEGATIVE_INFINITY;
+            for (int i = 0; i < trace.size(); i++) {
+                if (trace.get(i).capacity() > most) {
+                    most = trace.get(i).capacity();
+                    best = i;
+                }
+            }
+            return best;
         }
     }
 
@@ -384,6 +436,7 @@ public final class BurstCase {
         solver.setPressureRamp(ceiling, RAMP_PERIODS * period);
         solver.setRelaxationDamping(DAMPING, omega);
 
+        final List<Sample> trace = new ArrayList<>();
         boolean traversed = false;
         double peakCapacity = 0.0;
         double peakStrain = 0.0;
@@ -402,11 +455,20 @@ public final class BurstCase {
             applied = solver.borePressure();
             strain = hoopStrain(solver, mesh, meanRadius);
 
+            // Strain energy is zero on the first sample of a run that has not been loaded
+            // yet, and the ratio is reported rather than tested, so it is left at zero there
+            // instead of arriving in the trace as an infinity.
+            final double strainEnergy = solver.strainEnergy();
+            final double kinetic = strainEnergy > 0.0
+                    ? solver.kineticEnergy() / strainEnergy : 0.0;
+            trace.add(new Sample(solver.time(), strain, capacity, applied, kinetic,
+                    solver.maxPlasticStrain(), solver.yieldedFraction()));
+
             if (capacity > peakCapacity) {
                 peakCapacity = capacity;
                 peakStrain = strain;
                 peakApplied = applied;
-                peakKinetic = solver.kineticEnergy() / solver.strainEnergy();
+                peakKinetic = kinetic;
             } else if (applied >= ceiling && capacity < peakCapacity * (1.0 - PEAK_MARGIN)) {
                 // Past the peak, and past the end of the ramp so that a transient dip on the
                 // way up cannot be mistaken for the turnover.
@@ -436,7 +498,7 @@ public final class BurstCase {
                         material.youngsModulus(), material.poissonRatio()),
                 barlow, 100.0 * (barlow - exact) / exact,
                 solver.maxPlasticStrain(), strain,
-                (int) solver.steps(), wallClock);
+                (int) solver.steps(), wallClock, List.copyOf(trace));
     }
 
     // ---------------------------------------------------------------- measurement

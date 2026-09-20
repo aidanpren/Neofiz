@@ -1,0 +1,830 @@
+<title>Burst Test Cell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    /* The stage is a camera view: it stays dark whichever theme the page is in,
+       so these five are declared once and never redefined. */
+    --stage:        #0a0f12;
+    --stage-rule:   #1d2a31;
+    --stage-text:   #8fa4ae;
+    --stage-bright: #dce7ec;
+    --axis:         #4a5f6a;
+
+    /* Sequential ramp, cold to white-hot. Also constant: it encodes values. */
+    --ramp-0: #16303e;
+    --ramp-1: #2b8093;
+    --ramp-2: #d9a441;
+    --ramp-3: #e0482a;
+    --ramp-4: #f4e2d6;
+
+    --accent:      #2f8e9d;
+    --accent-soft: #d6edf0;
+
+    --ground: #e9edee;
+    --panel:  #ffffff;
+    --rule:   #c9d5d9;
+    --text:   #111b21;
+    --muted:  #5d7079;
+
+    --sp: 4px;
+    --radius: 3px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --accent:      #47b3c3;
+      --accent-soft: #14343a;
+      --ground: #0f1519;
+      --panel:  #161e23;
+      --rule:   #27333a;
+      --text:   #cad7dd;
+      --muted:  #7d919c;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --accent:      #47b3c3;
+    --accent-soft: #14343a;
+    --ground: #0f1519;
+    --panel:  #161e23;
+    --rule:   #27333a;
+    --text:   #cad7dd;
+    --muted:  #7d919c;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--text);
+    font-family: Archivo, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: 940px;
+    margin: 0 auto;
+    padding: calc(var(--sp) * 8) calc(var(--sp) * 5) calc(var(--sp) * 14);
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--sp) * 5);
+  }
+
+  /* ---------------------------------------------------------------- header */
+
+  header { display: flex; flex-direction: column; gap: calc(var(--sp) * 2); }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: clamp(26px, 4.2vw, 38px);
+    font-weight: 700;
+    letter-spacing: -0.022em;
+    line-height: 1.08;
+    text-wrap: balance;
+  }
+
+  .lede {
+    margin: 0;
+    max-width: 62ch;
+    color: var(--muted);
+    font-size: 15px;
+  }
+
+  .spec {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    flex-wrap: wrap;
+    gap: calc(var(--sp) * 1) calc(var(--sp) * 4);
+    padding-top: calc(var(--sp) * 2);
+    border-top: 1px solid var(--rule);
+  }
+  .spec b { color: var(--text); font-weight: 600; }
+
+  /* ---------------------------------------------------------------- stage */
+
+  .stagewrap { display: flex; flex-direction: column; gap: calc(var(--sp) * 2); }
+
+  .fieldbar {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: calc(var(--sp) * 2);
+  }
+  .fieldbar .label {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-right: calc(var(--sp) * 1);
+  }
+
+  .chip {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+    background: none;
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    padding: calc(var(--sp) * 1.25) calc(var(--sp) * 2.5);
+    cursor: pointer;
+    transition: color .12s, border-color .12s, background .12s;
+  }
+  .chip:hover { color: var(--text); border-color: var(--muted); }
+  .chip[aria-pressed="true"] {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+  }
+
+  .stage {
+    position: relative;
+    background: var(--stage);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  #view { display: block; width: 100%; height: 440px; }
+
+  .overlay {
+    position: absolute;
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px;
+    color: var(--stage-text);
+    pointer-events: none;
+    letter-spacing: 0.04em;
+  }
+  .overlay.tl { top: 12px; left: 14px; }
+  .overlay.tr { top: 12px; right: 14px; text-align: right; }
+  .overlay.tr b { color: var(--stage-bright); font-weight: 600; }
+
+  .legend { display: flex; align-items: center; gap: calc(var(--sp) * 2); margin-top: 6px; }
+  .legend .bar {
+    width: 132px; height: 7px; border-radius: 1px;
+    background: linear-gradient(to right,
+      var(--ramp-0), var(--ramp-1), var(--ramp-2), var(--ramp-3), var(--ramp-4));
+  }
+
+  /* ---------------------------------------------------------------- transport */
+
+  .transport {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    padding: calc(var(--sp) * 3) calc(var(--sp) * 4);
+    display: flex;
+    align-items: center;
+    gap: calc(var(--sp) * 4);
+  }
+
+  .play {
+    flex: none;
+    width: 42px; height: 42px;
+    display: grid; place-items: center;
+    border: 1px solid var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: background .12s;
+  }
+  .play:hover { background: var(--accent); color: var(--panel); }
+  .play svg { width: 15px; height: 15px; fill: currentColor; }
+
+  .track { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .trackcanvas { position: relative; }
+  #curve { display: block; width: 100%; height: 54px; cursor: crosshair; }
+  .trackfoot {
+    display: flex; justify-content: space-between;
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted);
+  }
+
+  .speed { flex: none; display: flex; gap: 2px; }
+  .speed button {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 11px; font-weight: 500;
+    color: var(--muted); background: none;
+    border: 1px solid transparent; border-radius: var(--radius);
+    padding: 4px 7px; cursor: pointer;
+  }
+  .speed button:hover { color: var(--text); }
+  .speed button[aria-pressed="true"] { color: var(--accent); border-color: var(--rule); }
+
+  /* ---------------------------------------------------------------- readouts */
+
+  .readouts {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .meter {
+    background: var(--panel);
+    padding: calc(var(--sp) * 3) calc(var(--sp) * 3.5);
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .meter .k {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted);
+  }
+  .meter .v {
+    font-family: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+    font-size: 21px; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .meter.hot .v { color: var(--ramp-3); }
+
+  /* ---------------------------------------------------------------- notes */
+
+  .notes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: calc(var(--sp) * 6);
+    border-top: 1px solid var(--rule);
+    padding-top: calc(var(--sp) * 5);
+  }
+  .notes section { display: flex; flex-direction: column; gap: calc(var(--sp) * 1.5); }
+  .notes h2 {
+    margin: 0;
+    font-size: 13px; font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .notes p { margin: 0; font-size: 14px; color: var(--muted); }
+  .notes b { color: var(--text); font-weight: 600; }
+
+  button:focus-visible, .stage:focus-visible, #curve:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration: 0.01ms !important; }
+  }
+
+  @media (max-width: 620px) {
+    #view { height: 320px; }
+    .transport { flex-wrap: wrap; }
+    .track { order: 3; flex-basis: 100%; }
+  }
+</style>
+
+<div class="shell">
+
+  <header>
+    <div class="eyebrow">Neofiz &middot; axisymmetric explicit FEM</div>
+    <h1>A copper tube, pressurised until it gives way</h1>
+    <p class="lede">
+      Nothing in this simulation knows what &ldquo;burst&rdquo; means. The wall thins as it
+      stretches and the radius grows, both of which raise the stress the same pressure
+      produces; the metal work-hardens and pushes back. What you are watching is the moment
+      the geometry starts winning.
+    </p>
+    <div class="spec" id="spec"></div>
+  </header>
+
+  <div class="stagewrap">
+    <div class="fieldbar">
+      <span class="label">Colour by</span>
+      <div id="chips" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+    </div>
+
+    <div class="stage">
+      <canvas id="view"></canvas>
+      <div class="overlay tl">
+        <div id="fieldname">plastic strain</div>
+        <div class="legend">
+          <span id="rampLow">0</span>
+          <span class="bar"></span>
+          <span id="rampHigh">0.25</span>
+        </div>
+      </div>
+      <div class="overlay tr">
+        <div>frame <b id="frameNo">—</b> / <span id="frameTotal">—</span></div>
+        <div id="phase">—</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="transport">
+    <button class="play" id="play" aria-label="Play">
+      <svg id="playIcon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 1.5v13l11-6.5z"/></svg>
+    </button>
+
+    <div class="track">
+      <div class="trackcanvas"><canvas id="curve" tabindex="0" role="slider"
+        aria-label="Scrub through the run" aria-valuemin="0" aria-valuenow="0"></canvas></div>
+      <div class="trackfoot">
+        <span>wall capacity through the run</span>
+        <span id="trackRight">peak marks the burst</span>
+      </div>
+    </div>
+
+    <div class="speed" id="speed"></div>
+  </div>
+
+  <div class="readouts" id="readouts"></div>
+
+  <div class="notes">
+    <section>
+      <h2>Why the tube is drawn twice</h2>
+      <p>
+        The solver works on a half-plane and revolves it, so one wall is computed and the
+        other is its mirror. The dashed line down the middle is the axis of revolution; the
+        dotted outline is where the tube started, <b>at rest</b>, before any pressure.
+      </p>
+    </section>
+    <section>
+      <h2>The scrub track is the measurement</h2>
+      <p>
+        It plots the pressure the wall could hold at each instant, read off an exact
+        equilibrium identity rather than from the pump. That is why it is still defined
+        <b>after</b> the peak, where there is no equilibrium at all and the applied pressure
+        has run away from what the tube can carry.
+      </p>
+    </section>
+    <section>
+      <h2>There is no crack, and that is the finding</h2>
+      <p>
+        Every element carries its own failure strain drawn from a correlated random field, so
+        this tube has a worst ring somewhere and no two seeds agree where. But it does not
+        neck: it is still swelling <b>almost evenly</b> as it gives way, and by the last frame
+        the whole wall is damaged rather than one station of it. A shell shares load along its
+        axis, so it averages its flaws instead of failing at the worst one.
+      </p>
+    </section>
+  </div>
+</div>
+
+<script src="film.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  var film = window.NEOFIZ_FILM;
+  var view = document.getElementById("view");
+  var curve = document.getElementById("curve");
+  var vx = view.getContext("2d");
+  var cx = curve.getContext("2d");
+
+  // ---------------------------------------------------------------- data
+
+  var frames = film.frames;
+  var conn = film.conn;
+  var boundary = film.boundary;
+  var nElem = film.elements;
+
+  function readoutIndex(name) {
+    for (var i = 0; i < film.readouts.length; i++) {
+      if (film.readouts[i].indexOf(name) === 0) return i;
+    }
+    return -1;
+  }
+  var iTime = readoutIndex("time");
+  var iApplied = readoutIndex("applied pressure");
+  var iCapacity = readoutIndex("wall capacity");
+
+  // The burst is the maximum of the capacity curve, which is the same definition the
+  // validation harness uses. Found here rather than shipped, so it cannot disagree with
+  // the curve drawn beside it.
+  var burst = 0;
+  for (var i = 1; i < frames.length; i++) {
+    if (frames[i].s[iCapacity] > frames[burst].s[iCapacity]) burst = i;
+  }
+
+  // Framing is computed over every frame, so the tube swells inside a fixed window instead
+  // of the camera zooming out to follow it.
+  var bounds = (function () {
+    var rMax = 0, rMin = Infinity, zLo = Infinity, zHi = -Infinity;
+    for (var f = 0; f < frames.length; f++) {
+      var fr = frames[f];
+      for (var n = 0; n < fr.r.length; n++) {
+        if (fr.r[n] > rMax) rMax = fr.r[n];
+        if (fr.r[n] < rMin) rMin = fr.r[n];
+        if (fr.z[n] < zLo) zLo = fr.z[n];
+        if (fr.z[n] > zHi) zHi = fr.z[n];
+      }
+    }
+    var air = 0.08 * (rMax - rMin);
+    return { rMax: rMax + air, rLo: rMin - air, zLo: zLo, zHi: zHi };
+  })();
+
+  var maxApplied = 0;
+  for (i = 0; i < frames.length; i++) {
+    if (frames[i].s[iApplied] > maxApplied) maxApplied = frames[i].s[iApplied];
+  }
+
+  // ---------------------------------------------------------------- colour
+
+  var RAMP = ["--ramp-0", "--ramp-1", "--ramp-2", "--ramp-3", "--ramp-4"].map(function (v) {
+    return hex(getComputedStyle(document.documentElement).getPropertyValue(v).trim());
+  });
+
+  function hex(s) {
+    return [parseInt(s.substr(1, 2), 16), parseInt(s.substr(3, 2), 16), parseInt(s.substr(5, 2), 16)];
+  }
+
+  function ramp(t) {
+    if (!(t > 0)) t = 0;
+    if (t > 1) t = 1;
+    var span = t * (RAMP.length - 1);
+    var lo = Math.min(Math.floor(span), RAMP.length - 2);
+    var k = span - lo;
+    var a = RAMP[lo], b = RAMP[lo + 1];
+    return "rgb(" + Math.round(a[0] + (b[0] - a[0]) * k) + ","
+                  + Math.round(a[1] + (b[1] - a[1]) * k) + ","
+                  + Math.round(a[2] + (b[2] - a[2]) * k) + ")";
+  }
+
+  function tidy(v) {
+    return Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(3);
+  }
+
+  function token(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  // ---------------------------------------------------------------- state
+
+  var at = frames.length - 1;
+  var field = 0;
+  var playing = false;
+  var speed = 1;
+  var last = 0;
+  var FPS = 34;
+
+  // ---------------------------------------------------------------- stage
+
+  function fit(canvas, ctx) {
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w: w, h: h };
+  }
+
+  // The wall is 2 mm on a 48 mm bore, so a true-scale section is two hairlines either side
+  // of an enormous hole and there is nothing to look at. Sectional drawings have handled
+  // this for a century: cut the middle out, mark the break, and say so. Both wall bands stay
+  // at true scale in both directions -- only the gap between them is fiction, and it is
+  // labelled as such.
+  var GAP = 58;
+
+  function drawStage() {
+    var box = fit(view, vx);
+    vx.clearRect(0, 0, box.w, box.h);
+
+    var pad = 40;
+    var band = bounds.rMax - bounds.rLo;
+    var modelW = bounds.zHi - bounds.zLo;
+    var scale = Math.min((box.w - 2 * pad) / modelW,
+                         (box.h - 2 * pad - GAP) / (2 * band));
+    var ox = box.w / 2, oy = box.h / 2;
+    var zMid = 0.5 * (bounds.zLo + bounds.zHi);
+
+    function X(z) { return ox + (z - zMid) * scale; }
+
+    // Piecewise: the wall bands are linear in r, the bore between them is collapsed to GAP.
+    function Y(r, sign) {
+      var out = GAP / 2 + (Math.abs(r) - bounds.rLo) * scale;
+      return sign > 0 ? oy - out : oy + out;
+    }
+
+    var fr = frames[at];
+    var left = X(bounds.zLo), width = (bounds.zHi - bounds.zLo) * scale;
+
+    // The elided bore, tinted by how hard it is being pushed. A cue, not a measurement.
+    var drive = maxApplied > 0 ? fr.s[iApplied] / maxApplied : 0;
+    vx.fillStyle = "rgba(217,164,65," + (0.05 + 0.20 * drive).toFixed(3) + ")";
+    vx.fillRect(left, oy - GAP / 2, width, GAP);
+
+    var lo = film.fields[field].low, hi = film.fields[field].high;
+    var values = fr.v[field];
+
+    for (var mirror = 0; mirror < 2; mirror++) {
+      var sign = mirror === 0 ? 1 : -1;
+      for (var e = 0; e < nElem; e++) {
+        var b = e * 4;
+        vx.beginPath();
+        for (var k = 0; k < 4; k++) {
+          var nd = conn[b + k];
+          var px = X(fr.z[nd]), py = Y(fr.r[nd], sign);
+          if (k === 0) vx.moveTo(px, py); else vx.lineTo(px, py);
+        }
+        vx.closePath();
+        vx.fillStyle = ramp((values[e] - lo) / (hi - lo));
+        vx.fill();
+        vx.strokeStyle = "rgba(0,0,0,0.28)";
+        vx.lineWidth = 0.5;
+        vx.stroke();
+      }
+
+      // At rest: where the wall was before any pressure.
+      var rest = frames[0];
+      vx.strokeStyle = token("--axis");
+      vx.lineWidth = 1;
+      vx.setLineDash([2, 3]);
+      vx.beginPath();
+      for (var q = 0; q < boundary.length; q += 2) {
+        vx.moveTo(X(rest.z[boundary[q]]), Y(rest.r[boundary[q]], sign));
+        vx.lineTo(X(rest.z[boundary[q + 1]]), Y(rest.r[boundary[q + 1]], sign));
+      }
+      vx.stroke();
+      vx.setLineDash([]);
+
+      vx.strokeStyle = token("--stage-bright");
+      vx.lineWidth = 1.25;
+      vx.beginPath();
+      for (q = 0; q < boundary.length; q += 2) {
+        vx.moveTo(X(fr.z[boundary[q]]), Y(fr.r[boundary[q]], sign));
+        vx.lineTo(X(fr.z[boundary[q + 1]]), Y(fr.r[boundary[q + 1]], sign));
+      }
+      vx.stroke();
+    }
+
+    // The break, and the axis of revolution running down the middle of it.
+    vx.strokeStyle = token("--axis");
+    vx.lineWidth = 1;
+    vx.setLineDash([3, 3]);
+    vx.beginPath();
+    vx.moveTo(left, oy - GAP / 2); vx.lineTo(left + width, oy - GAP / 2);
+    vx.moveTo(left, oy + GAP / 2); vx.lineTo(left + width, oy + GAP / 2);
+    vx.stroke();
+
+    vx.setLineDash([8, 4, 2, 4]);
+    vx.beginPath();
+    vx.moveTo(left - 20, oy); vx.lineTo(left + width + 20, oy);
+    vx.stroke();
+    vx.setLineDash([]);
+
+    vx.fillStyle = token("--stage-text");
+    vx.font = '10px "IBM Plex Mono", ui-monospace, monospace';
+    vx.textAlign = "center";
+    vx.fillText("bore, " + (2e3 * bounds.rLo).toFixed(1)
+      + " mm across, cut away and not to scale", ox, oy - GAP / 2 + 15);
+    vx.textAlign = "left";
+    vx.fillText("axis", left - 18, oy + 3.5);
+
+    // Radius labels, so the wall's true position is readable even though the bore is not.
+    vx.fillStyle = token("--stage-text");
+    for (var mm = Math.ceil(bounds.rLo * 1000); mm <= bounds.rMax * 1000; mm++) {
+      var y = Y(mm / 1000, 1);
+      vx.fillRect(left - 7, y, 4, 1);
+      if (mm % 2 === 0) vx.fillText(mm + "", left - 30, y + 3.5);
+    }
+
+    // Scale bar. True in both directions inside the wall bands, which is the whole point of
+    // breaking the bore rather than squashing the picture.
+    var barMm = 10;
+    var barPx = barMm * 1e-3 * scale;
+    var bx = left, by = box.h - 12;
+    vx.strokeStyle = token("--stage-text");
+    vx.lineWidth = 1;
+    vx.beginPath();
+    vx.moveTo(bx, by - 4); vx.lineTo(bx, by);
+    vx.lineTo(bx + barPx, by); vx.lineTo(bx + barPx, by - 4);
+    vx.stroke();
+    vx.fillText(barMm + " mm", bx + barPx + 8, by + 1);
+    vx.textAlign = "right";
+    vx.fillText("radius, mm", left + width, by + 1);
+    vx.textAlign = "left";
+  }
+
+  // ---------------------------------------------------------------- scrub track
+
+  function drawCurve() {
+    var box = fit(curve, cx);
+    cx.clearRect(0, 0, box.w, box.h);
+
+    var pad = 4;
+    var top = pad, bot = box.h - pad;
+    var peak = frames[burst].s[iCapacity];
+    if (!(peak > 0)) peak = 1;
+
+    function X(i) { return (i / (frames.length - 1)) * box.w; }
+    function Y(v) { return bot - (v / peak) * (bot - top); }
+
+    // Applied pressure behind, capacity in front: the gap between them after the peak is
+    // the force that is accelerating the wall outward.
+    cx.beginPath();
+    cx.moveTo(0, bot);
+    for (var i = 0; i < frames.length; i++) cx.lineTo(X(i), Y(Math.min(frames[i].s[iApplied], peak * 1.3)));
+    cx.lineTo(box.w, bot);
+    cx.closePath();
+    cx.fillStyle = "rgba(217,164,65,0.16)";
+    cx.fill();
+
+    cx.beginPath();
+    for (i = 0; i < frames.length; i++) {
+      var px = X(i), py = Y(frames[i].s[iCapacity]);
+      if (i === 0) cx.moveTo(px, py); else cx.lineTo(px, py);
+    }
+    cx.strokeStyle = token("--accent");
+    cx.lineWidth = 1.75;
+    cx.stroke();
+
+    cx.beginPath();
+    cx.arc(X(burst), Y(peak), 3.5, 0, 6.2832);
+    cx.fillStyle = token("--ramp-3");
+    cx.fill();
+
+    cx.beginPath();
+    cx.moveTo(X(at), top - 2);
+    cx.lineTo(X(at), bot + 2);
+    cx.strokeStyle = token("--text");
+    cx.lineWidth = 1;
+    cx.stroke();
+  }
+
+  // ---------------------------------------------------------------- chrome
+
+  function paintChrome() {
+    var fr = frames[at];
+    document.getElementById("frameNo").textContent = at + 1;
+    document.getElementById("phase").textContent =
+      at < burst ? "holding" : at === burst ? "burst" : "past the peak";
+
+    var tiles = document.querySelectorAll(".meter .v");
+    for (var m = 0; m < film.readouts.length; m++) {
+      var v = fr.s[m];
+      tiles[m].textContent = Math.abs(v) >= 100 ? v.toFixed(1)
+                           : Math.abs(v) >= 1 ? v.toFixed(3) : v.toFixed(4);
+    }
+    document.querySelectorAll(".meter")[film.readouts.length - 1]
+      .classList.toggle("hot", fr.s[film.readouts.length - 1] > 0.5);
+
+    curve.setAttribute("aria-valuenow", String(at));
+    curve.setAttribute("aria-valuetext",
+      "frame " + (at + 1) + ", " + fr.s[iTime].toFixed(3) + " milliseconds");
+  }
+
+  function render() { drawStage(); drawCurve(); paintChrome(); }
+
+  // ---------------------------------------------------------------- build
+
+  document.getElementById("spec").innerHTML = [
+    ["material", "OFHC copper"],
+    ["mean radius", "25.0 mm"],
+    ["wall", "2.00 mm"],
+    ["length", "40 mm"],
+    ["mesh", film.elements + " quads"],
+    ["frames", frames.length]
+  ].map(function (p) { return p[0] + " <b>" + p[1] + "</b>"; }).join("");
+
+  document.getElementById("frameTotal").textContent = frames.length;
+
+  var chips = document.getElementById("chips");
+  film.fields.forEach(function (f, idx) {
+    var b = document.createElement("button");
+    b.className = "chip";
+    b.type = "button";
+    b.textContent = f.name;
+    b.setAttribute("aria-pressed", idx === 0 ? "true" : "false");
+    b.addEventListener("click", function () {
+      field = idx;
+      Array.prototype.forEach.call(chips.children, function (c, j) {
+        c.setAttribute("aria-pressed", j === idx ? "true" : "false");
+      });
+      document.getElementById("fieldname").textContent =
+        f.name + (f.units ? ", " + f.units : "");
+      document.getElementById("rampLow").textContent = tidy(f.low);
+      document.getElementById("rampHigh").textContent = tidy(f.high)
+        + (f.auto ? "  fitted to this run" : "");
+      render();
+    });
+    chips.appendChild(b);
+  });
+
+  var readouts = document.getElementById("readouts");
+  film.readouts.forEach(function (name) {
+    var cell = document.createElement("div");
+    cell.className = "meter";
+    var k = document.createElement("div");
+    k.className = "k";
+    k.textContent = name;
+    var v = document.createElement("div");
+    v.className = "v";
+    v.textContent = "—";
+    cell.appendChild(k); cell.appendChild(v);
+    readouts.appendChild(cell);
+  });
+
+  var speedBar = document.getElementById("speed");
+  [0.25, 0.5, 1, 2].forEach(function (s) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = s + "×";
+    b.setAttribute("aria-pressed", s === 1 ? "true" : "false");
+    b.addEventListener("click", function () {
+      speed = s;
+      Array.prototype.forEach.call(speedBar.children, function (c) {
+        c.setAttribute("aria-pressed", c === b ? "true" : "false");
+      });
+    });
+    speedBar.appendChild(b);
+  });
+
+  // ---------------------------------------------------------------- playback
+
+  var playBtn = document.getElementById("play");
+  var icon = document.getElementById("playIcon");
+
+  function setPlaying(on) {
+    playing = on;
+    playBtn.setAttribute("aria-label", on ? "Pause" : "Play");
+    icon.innerHTML = on
+      ? '<path d="M3 2h4v12H3zM9 2h4v12H9z"/>'
+      : '<path d="M3 1.5v13l11-6.5z"/>';
+    if (on) { last = 0; requestAnimationFrame(tick); }
+  }
+
+  playBtn.addEventListener("click", function () {
+    if (!playing && at >= frames.length - 1) at = 0;
+    setPlaying(!playing);
+  });
+
+  function tick(now) {
+    if (!playing) return;
+    if (!last) last = now;
+    if (now - last >= 1000 / (FPS * speed)) {
+      last = now;
+      at++;
+      if (at >= frames.length - 1) { at = frames.length - 1; setPlaying(false); }
+      render();
+    }
+    if (playing) requestAnimationFrame(tick);
+  }
+
+  function seekFromEvent(ev) {
+    var box = curve.getBoundingClientRect();
+    var t = (ev.clientX - box.left) / box.width;
+    at = Math.max(0, Math.min(frames.length - 1, Math.round(t * (frames.length - 1))));
+    render();
+  }
+
+  var scrubbing = false;
+  curve.addEventListener("pointerdown", function (ev) {
+    scrubbing = true;
+    curve.setPointerCapture(ev.pointerId);
+    setPlaying(false);
+    seekFromEvent(ev);
+  });
+  curve.addEventListener("pointermove", function (ev) { if (scrubbing) seekFromEvent(ev); });
+  curve.addEventListener("pointerup", function () { scrubbing = false; });
+
+  curve.addEventListener("keydown", function (ev) {
+    var step = ev.shiftKey ? 10 : 1;
+    if (ev.key === "ArrowRight") { at = Math.min(frames.length - 1, at + step); }
+    else if (ev.key === "ArrowLeft") { at = Math.max(0, at - step); }
+    else if (ev.key === "Home") { at = 0; }
+    else if (ev.key === "End") { at = frames.length - 1; }
+    else return;
+    ev.preventDefault();
+    setPlaying(false);
+    render();
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.code !== "Space" || ev.target.tagName === "BUTTON") return;
+    ev.preventDefault();
+    if (!playing && at >= frames.length - 1) at = 0;
+    setPlaying(!playing);
+  });
+
+  window.addEventListener("resize", render);
+  curve.setAttribute("aria-valuemax", String(frames.length - 1));
+
+  (function primeLegend() {
+    var f = film.fields[0];
+    document.getElementById("fieldname").textContent =
+      f.name + (f.units ? ", " + f.units : "");
+    document.getElementById("rampLow").textContent = tidy(f.low);
+    document.getElementById("rampHigh").textContent = tidy(f.high)
+      + (f.auto ? "  fitted to this run" : "");
+  })();
+
+  // Opens on the last frame, where the wall has swelled, thinned and let go.
+  document.fonts.ready.then(render);
+  render();
+})();
+</script>

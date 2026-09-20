@@ -158,10 +158,17 @@ public final class Damage {
     /** Below this in-plane anisotropy the band has no preferred direction. See the class note. */
     private static final double ISOTROPIC = 1.0e-9;
 
-    /** Fracture energy per unit crack area, J/m^2. */
-    private final double fractureEnergy;
-    /** Young's modulus, for the snap-back clamp. */
-    private final double youngsModulus;
+    /**
+     * Fracture energy per unit crack area, J/m^2, one per integration point.
+     *
+     * <p>Per point rather than per body because a mesh may now hold more than one substance,
+     * and G_f is the property that differs most between them -- four orders of magnitude from
+     * a glass to a tough steel. Broadcasting a single value across the array is the uniform
+     * case and costs the same arithmetic.
+     */
+    private final double[] fractureEnergy;
+    /** Young's modulus, for the snap-back clamp. One per point, for the same reason. */
+    private final double[] youngsModulus;
 
     /** Plastic strain at which softening begins, one per integration point. */
     final double[] failureStrain;
@@ -194,13 +201,40 @@ public final class Damage {
      */
     public Damage(double fractureEnergy, double youngsModulus,
                   double[] failureStrain, double[] geometry) {
-        if (!(fractureEnergy > 0.0)) {
+        this(fill(fractureEnergy, failureStrain.length),
+                fill(youngsModulus, failureStrain.length), failureStrain, geometry);
+    }
+
+    private static double[] fill(double value, int points) {
+        final double[] out = new double[points];
+        java.util.Arrays.fill(out, value);
+        return out;
+    }
+
+    /**
+     * The per-point form, for a mesh holding more than one substance.
+     *
+     * @param fractureEnergy energy per unit crack area, J/m^2, one per integration point
+     * @param youngsModulus  the E of the material at each point
+     * @param failureStrain  plastic strain at onset, one per integration point
+     * @param geometry       stride {@link #GEOMETRY_STRIDE} per point: area, uR, uZ, vR, vZ
+     */
+    public Damage(double[] fractureEnergy, double[] youngsModulus,
+                  double[] failureStrain, double[] geometry) {
+        if (fractureEnergy.length != failureStrain.length
+                || youngsModulus.length != failureStrain.length) {
             throw new IllegalArgumentException(
-                    "fracture energy must be positive, was " + fractureEnergy);
+                    "fracture energy, Young's modulus and failure strain must agree in length");
         }
-        if (!(youngsModulus > 0.0)) {
-            throw new IllegalArgumentException(
-                    "Young's modulus must be positive, was " + youngsModulus);
+        for (int p = 0; p < failureStrain.length; p++) {
+            if (!(fractureEnergy[p] > 0.0)) {
+                throw new IllegalArgumentException(
+                        "fracture energy must be positive, was " + fractureEnergy[p]);
+            }
+            if (!(youngsModulus[p] > 0.0)) {
+                throw new IllegalArgumentException(
+                        "Young's modulus must be positive, was " + youngsModulus[p]);
+            }
         }
         if (geometry.length != GEOMETRY_STRIDE * failureStrain.length) {
             throw new IllegalArgumentException(
@@ -219,8 +253,8 @@ public final class Damage {
                                 + geometry[GEOMETRY_STRIDE * p]);
             }
         }
-        this.fractureEnergy = fractureEnergy;
-        this.youngsModulus = youngsModulus;
+        this.fractureEnergy = fractureEnergy.clone();
+        this.youngsModulus = youngsModulus.clone();
         this.failureStrain = failureStrain;
         this.geometry = geometry;
         this.strength = new double[failureStrain.length];
@@ -228,8 +262,9 @@ public final class Damage {
         this.width = new double[failureStrain.length];
     }
 
-    public double fractureEnergy() {
-        return fractureEnergy;
+    /** Fracture energy at one point, J/m^2. */
+    public double fractureEnergy(int point) {
+        return fractureEnergy[point];
     }
 
     public int points() {
@@ -292,11 +327,12 @@ public final class Damage {
         width[point] = h;
 
         strength[point] = flowStress;
-        final double slope = -flowStress * flowStress * h / (2.0 * fractureEnergy);
+        final double slope = -flowStress * flowStress * h / (2.0 * fractureEnergy[point]);
         // Assigned rather than computed through the range so that a clamped point holds
         // exactly -E, which is what makes clampedPoints() an equality test rather than a
         // tolerance.
-        softening[point] = slope < -youngsModulus ? -youngsModulus : slope;
+        final double floor = -youngsModulus[point];
+        softening[point] = slope < floor ? floor : slope;
     }
 
     /**
@@ -369,7 +405,9 @@ public final class Damage {
      */
     public int clampedPoints() {
         int n = 0;
-        for (double s : softening) if (s == -youngsModulus) n++;
+        for (int p = 0; p < softening.length; p++) {
+            if (softening[p] == -youngsModulus[p]) n++;
+        }
         return n;
     }
 

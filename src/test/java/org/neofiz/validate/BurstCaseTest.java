@@ -32,6 +32,9 @@ class BurstCaseTest {
     /** The gate figure, with the ceiling extrapolated out. */
     private static final BurstCase.OvershootFit FIT = BurstCase.extrapolated();
 
+    /** The same tube under a ceiling below its capacity: it settles instead of bursting. */
+    private static final BurstCase.Result SETTLED = BurstCase.overshootSweep(0.90);
+
     private static final double GATE = 10.0;
 
     // ------------------------------------------------------------------ the gate
@@ -76,7 +79,7 @@ class BurstCaseTest {
         // hoop stress resultant are the same number exactly. This is the audit of
         // loadCapacity: it says the integral is right, that it is being evaluated on the
         // configuration the solver assembles forces in, and that the run settled.
-        BurstCase.Result settled = BurstCase.overshootSweep(0.90);
+        BurstCase.Result settled = SETTLED;
 
         assertFalse(settled.traversedPeak(), "0.90 of burst must not burst");
         assertTrue(settled.kineticOverStrainAtPeak() < 1.0e-12,
@@ -248,6 +251,97 @@ class BurstCaseTest {
                 () -> BurstCase.run(perfect, 25.0e-3, 25.0, 8, Integration.REDUCED,
                         Kinematics.FINITE_STRAIN, 1.05));
         assertTrue(e.getMessage().contains("instability to find"), e.getMessage());
+    }
+
+    // ------------------------------------------------------------------ the trace
+
+    @Test
+    @DisplayName("the trace is the run, not a summary of it")
+    void traceIsTheRun() {
+        // Everything reported out of a run has to be findable in the trace, because the
+        // trace is what anything downstream -- a plot, a sweep, the experiment layer -- will
+        // actually read. A headline number that cannot be recovered from the samples is a
+        // number computed somewhere the samples cannot see.
+        assertFalse(REFERENCE.trace().isEmpty(), "a run with no samples in it");
+
+        int peak = REFERENCE.peakIndex();
+        assertTrue(peak >= 0, "a burst run must locate its peak in its own trace");
+        assertEquals(REFERENCE.burstPressureFem(), REFERENCE.trace().get(peak).capacity(), 0.0);
+        assertEquals(REFERENCE.burstHoopStrainFem(),
+                REFERENCE.trace().get(peak).hoopStrain(), 0.0);
+        assertEquals(REFERENCE.appliedAtPeak(), REFERENCE.trace().get(peak).applied(), 0.0);
+
+        BurstCase.Sample last = REFERENCE.trace().get(REFERENCE.trace().size() - 1);
+        assertEquals(REFERENCE.finalHoopStrain(), last.hoopStrain(), 0.0);
+        assertEquals(REFERENCE.maxPlasticStrain(), last.maxPlasticStrain(), 0.0);
+    }
+
+    @Test
+    @DisplayName("the traverse is monotone in time and stops just past the peak")
+    void traceShape() {
+        java.util.List<BurstCase.Sample> trace = REFERENCE.trace();
+        for (int i = 1; i < trace.size(); i++) {
+            assertTrue(trace.get(i).time() > trace.get(i - 1).time(),
+                    "time went backwards at sample " + i);
+            assertTrue(trace.get(i).maxPlasticStrain() >= trace.get(i - 1).maxPlasticStrain(),
+                    "plastic strain is not recoverable; it fell at sample " + i);
+            assertTrue(trace.get(i).applied() <= REFERENCE.appliedCeiling() * (1.0 + 1e-12),
+                    "the ramp exceeded its own ceiling at sample " + i);
+        }
+
+        // The run breaks out once the capacity has fallen PEAK_MARGIN below its maximum, so
+        // the last sample is the first one past that line and the peak is not the last
+        // sample. Both halves matter: a trace that ended at the peak could not show a
+        // turnover, and one that ran far past it would be reporting a tube in free flight.
+        int peak = REFERENCE.peakIndex();
+        assertTrue(peak < trace.size() - 1, "the trace stops at the peak, showing no turnover");
+        double drop = 1.0 - trace.get(trace.size() - 1).capacity() / REFERENCE.burstPressureFem();
+        assertTrue(drop >= BurstCase.PEAK_MARGIN, "stopped before the margin; drop = " + drop);
+        assertTrue(drop < 4.0 * BurstCase.PEAK_MARGIN, "ran well past it; drop = " + drop);
+    }
+
+    @Test
+    @DisplayName("capacity tracks the applied pressure up the stable branch and leaves it after")
+    void capacityLeavesTheAppliedPressure() {
+        // This is the audit that licenses reading the capacity past the peak at all. Up the
+        // stable branch the two agree to within the drag the damping is applying; past the
+        // peak they cannot agree, because the excess is what is accelerating the wall. The
+        // instability is precisely this divergence, and the trace has to contain it.
+        java.util.List<BurstCase.Sample> trace = REFERENCE.trace();
+        int peak = REFERENCE.peakIndex();
+
+        // The last sample still on the ramp. The ramp is 20 breathing periods and the
+        // post-peak creep is hundreds, so the stable branch is a small early fraction of the
+        // trace and picking a sample by index rather than by what the ramp is doing finds a
+        // tube that topped out long ago.
+        int rampTop = -1;
+        for (int i = 0; i < peak; i++) {
+            if (trace.get(i).applied() < 0.999 * REFERENCE.appliedCeiling()) rampTop = i;
+        }
+        assertTrue(rampTop > 0, "no sample was taken while the ramp was still rising");
+
+        BurstCase.Sample rising = trace.get(rampTop);
+        assertTrue(rising.capacity() < rising.applied(),
+                "the drag must make the wall hold less than is applied while it is creeping");
+        assertTrue((rising.applied() - rising.capacity()) / rising.applied() < 0.25,
+                "capacity and applied pressure disagree by more than the creep drag: "
+                        + rising.capacity() + " vs " + rising.applied());
+
+        BurstCase.Sample after = trace.get(trace.size() - 1);
+        assertEquals(REFERENCE.appliedCeiling(), after.applied(), 1e-6 * after.applied(),
+                "past the peak the ramp should be sitting on its ceiling");
+        assertTrue(after.capacity() < after.applied(),
+                "past the peak the wall must be holding less than is applied");
+    }
+
+    @Test
+    @DisplayName("a run that never bursts has a trace but no peak index")
+    void noPeakNoIndex() {
+        BurstCase.Result settled = SETTLED;
+        assertFalse(settled.traversedPeak());
+        assertFalse(settled.trace().isEmpty(), "it still ran, so it still has samples");
+        assertEquals(-1, settled.peakIndex(),
+                "a run with no load maximum must not point at one");
     }
 
     @Test

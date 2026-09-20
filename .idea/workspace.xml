@@ -4,7 +4,22 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="05f79696-fba7-4cca-ae57-c48dbe7e9302" name="Changes" comment="" />
+    <list default="true" id="05f79696-fba7-4cca-ae57-c48dbe7e9302" name="Changes" comment="">
+      <change beforePath="$PROJECT_DIR$/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/gradle.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/gradle.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/vcs.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/vcs.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/README.md" beforeDir="false" afterPath="$PROJECT_DIR$/README.md" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/build.gradle.kts" beforeDir="false" afterPath="$PROJECT_DIR$/build.gradle.kts" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/neofiz/mesh/QuadMesh.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/neofiz/mesh/QuadMesh.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/neofiz/solver/Damage.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/neofiz/solver/Damage.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/neofiz/solver/ExplicitSolver.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/neofiz/solver/ExplicitSolver.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/neofiz/validate/BurstCase.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/neofiz/validate/BurstCase.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/main/java/org/neofiz/validate/DefectBurst.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/main/java/org/neofiz/validate/DefectBurst.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/org/neofiz/solver/ContactTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/org/neofiz/solver/ContactTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/org/neofiz/validate/BurstCaseTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/org/neofiz/validate/BurstCaseTest.java" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/test/java/org/neofiz/validate/DefectBurstTest.java" beforeDir="false" afterPath="$PROJECT_DIR$/src/test/java/org/neofiz/validate/DefectBurstTest.java" afterDir="false" />
+    </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
@@ -14,6 +29,18 @@
     <projectState path="$PROJECT_DIR$">
       <ProjectState />
     </projectState>
+  </component>
+  <component name="ExternalProjectsManager">
+    <system id="GRADLE">
+      <state>
+        <projects_view>
+          <tree_state>
+            <expand />
+            <select />
+          </tree_state>
+        </projects_view>
+      </state>
+    </system>
   </component>
   <component name="Git.Settings">
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
@@ -81,10 +108,10 @@
       <entry key="W1" value="4.999957897962176" />
     </decayedShown>
   </component>
-  <component name="ProjectColorInfo"><![CDATA[{
-  "associatedIndex": 2,
-  "fromUser": false
-}]]></component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 2,
+  &quot;fromUser&quot;: false
+}</component>
   <component name="ProjectId" id="3JVLKCDGytOP592CtFXbIxcLgut" />
   <component name="ProjectViewState">
     <option name="hideEmptyMiddlePackages" value="true" />
@@ -97,12 +124,14 @@
     "ModuleVcsDetector.initialDetectionPerformed": "true",
     "RunOnceActivity.MCP Project settings loaded": "true",
     "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "codeWithMe.voiceChat.enabledByDefault": "false",
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "master",
     "junie.onboarding.icon.badge.shown": "true",
     "kotlin-language-version-configured": "true",
+    "last_opened_file_path": "C:/Users/Aidan/Documents/GitHub/Neofiz",
     "node.js.detected.package.eslint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
@@ -119,8 +148,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-jdk-30f59d01ecdd-a203e0a19954-intellij.indexing.shared.core-IU-262.10315.125" />
-        <option value="bundled-js-predefined-d6986cc7102b-4abd2a77f808-JavaScript-IU-262.10315.125" />
+        <option value="bundled-jdk-30f59d01ecdd-a203e0a19954-intellij.indexing.shared.core-IU-262.10968.63" />
+        <option value="bundled-js-predefined-d6986cc7102b-4abd2a77f808-JavaScript-IU-262.10968.63" />
       </set>
     </attachedChunks>
   </component>

@@ -1,0 +1,813 @@
+<title>Impact Cell</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --ground: #E9ECEF;
+    --panel: #FFFFFF;
+    --rule: #CBD2DA;
+    --rule-soft: #E2E7EC;
+    --text: #131719;
+    --muted: #5A6672;
+    --accent: #0E7490;
+    --accent-soft: #D7EDF3;
+
+    /* The stage is a test cell. It is dark in both themes on purpose: the ramp has to mean
+       the same thing to two readers looking at the same colour, and a ground that moves
+       underneath it would make the low end read as two different values. */
+    --stage: #14181C;
+    --stage-rule: #2A3138;
+    --stage-text: #8D99A6;
+    --stage-bright: #E6EDF3;
+    --anvil: #59636E;
+
+    --ramp-0: #10123A;
+    --ramp-1: #5B1A6B;
+    --ramp-2: #A62E62;
+    --ramp-3: #E4643C;
+    --ramp-4: #F7D84B;
+
+    --shadow: 0 1px 2px rgba(19, 23, 25, .07), 0 8px 24px rgba(19, 23, 25, .05);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0C0F12;
+      --panel: #14181C;
+      --rule: #2A3138;
+      --rule-soft: #1D2329;
+      --text: #E6EDF3;
+      --muted: #8D99A6;
+      --accent: #22D3EE;
+      --accent-soft: #10323B;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 24px rgba(0, 0, 0, .35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0C0F12;
+    --panel: #14181C;
+    --rule: #2A3138;
+    --rule-soft: #1D2329;
+    --text: #E6EDF3;
+    --muted: #8D99A6;
+    --accent: #22D3EE;
+    --accent-soft: #10323B;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 24px rgba(0, 0, 0, .35);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: Archivo, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 28px 24px 56px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  header { display: flex; flex-direction: column; gap: 6px; }
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  h1 {
+    margin: 0;
+    font-size: clamp(22px, 3.2vw, 31px);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    text-wrap: balance;
+  }
+  .standfirst { margin: 2px 0 0; max-width: 64ch; color: var(--muted); }
+
+  .scenes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .scenes button {
+    appearance: none;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 7px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--rule);
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .scenes button:hover { border-color: var(--accent); color: var(--accent); }
+  .scenes button[aria-pressed="true"] {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .scenes button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .console {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 250px;
+    gap: 16px;
+    align-items: stretch;
+  }
+  @media (max-width: 860px) { .console { grid-template-columns: minmax(0, 1fr); } }
+
+  .stage-wrap {
+    background: var(--stage);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: var(--shadow);
+  }
+  #stage { display: block; width: 100%; height: 460px; }
+  @media (max-width: 860px) { #stage { height: 360px; } }
+
+  .fields {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0;
+    border-bottom: 1px solid var(--stage-rule);
+    background: rgba(0, 0, 0, .18);
+  }
+  .fields button {
+    appearance: none;
+    background: none;
+    border: 0;
+    border-right: 1px solid var(--stage-rule);
+    color: var(--stage-text);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 9px 14px;
+    cursor: pointer;
+  }
+  .fields button:hover { color: var(--stage-bright); }
+  .fields button[aria-pressed="true"] {
+    color: var(--stage-bright);
+    background: rgba(255, 255, 255, .07);
+    box-shadow: inset 0 -2px 0 var(--ramp-3);
+  }
+  .fields button:focus-visible { outline: 2px solid var(--ramp-4); outline-offset: -2px; }
+
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    border-top: 1px solid var(--stage-rule);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--stage-text);
+  }
+  .bar {
+    flex: 1;
+    height: 8px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--ramp-0), var(--ramp-1), var(--ramp-2), var(--ramp-3), var(--ramp-4));
+  }
+
+  .rail {
+    display: flex;
+    flex-direction: column;
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .rail h2 {
+    margin: 0;
+    padding: 11px 14px 10px;
+    font-size: 11px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    font-weight: 500;
+    color: var(--muted);
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .readout {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 9px 14px;
+    border-bottom: 1px solid var(--rule-soft);
+  }
+  .readout:last-child { border-bottom: 0; }
+  .readout .k { font-size: 11px; color: var(--muted); }
+  .readout .v {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 17px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.01em;
+  }
+
+  .transport {
+    background: var(--panel);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    box-shadow: var(--shadow);
+    padding: 12px 14px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  #track { display: block; width: 100%; height: 76px; cursor: ew-resize; }
+  .controls { display: flex; align-items: center; gap: 12px; }
+  .controls button {
+    appearance: none;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 11px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 7px 15px;
+    border-radius: 4px;
+    border: 1px solid var(--rule);
+    background: var(--ground);
+    color: var(--text);
+    cursor: pointer;
+  }
+  .controls button:hover { border-color: var(--accent); color: var(--accent); }
+  .controls button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .frame-count {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    margin-left: auto;
+  }
+  .key { font-size: 12px; color: var(--muted); }
+
+  .notes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 14px 24px;
+    padding-top: 6px;
+    border-top: 1px solid var(--rule);
+  }
+  .notes h3 {
+    margin: 12px 0 4px;
+    font-size: 12px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    font-weight: 500;
+    color: var(--accent);
+  }
+  .notes p { margin: 0; color: var(--muted); font-size: 13px; }
+  .notes b { color: var(--text); font-weight: 600; }
+
+  .missing {
+    padding: 40px 24px;
+    text-align: center;
+    color: var(--muted);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 13px;
+  }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="shell">
+  <header>
+    <div class="eyebrow">Neofiz &middot; plane strain &middot; explicit Lagrangian FEM</div>
+    <h1 id="title">Impact Cell</h1>
+    <p class="standfirst" id="standfirst">Loading the film&hellip;</p>
+    <div class="scenes" id="scenes" role="group" aria-label="Scene"></div>
+  </header>
+
+  <div class="console">
+    <div class="stage-wrap">
+      <div class="fields" id="fields" role="group" aria-label="Field to colour by"></div>
+      <canvas id="stage"></canvas>
+      <div class="legend">
+        <span id="lo">&mdash;</span>
+        <span class="bar" aria-hidden="true"></span>
+        <span id="hi">&mdash;</span>
+        <span id="units"></span>
+      </div>
+    </div>
+
+    <div class="rail">
+      <h2>Readouts</h2>
+      <div id="readouts"></div>
+    </div>
+  </div>
+
+  <div class="transport">
+    <canvas id="track"></canvas>
+    <div class="controls">
+      <button id="play" type="button">Play</button>
+      <button id="rewind" type="button">Rewind</button>
+      <span class="key">Space plays &middot; arrows step a frame</span>
+      <span class="frame-count" id="count">&mdash;</span>
+    </div>
+  </div>
+
+  <div class="notes" id="notes"></div>
+</div>
+
+<script src="bracket.js"></script>
+<script src="smash.js"></script>
+<script src="topple.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // Every film file pushes itself onto this array, so a page that includes several of them
+  // gets several scenes without any of the files knowing about the others.
+  var films = window.NEOFIZ_FILMS
+    || (window.NEOFIZ_FILM ? [window.NEOFIZ_FILM] : []);
+  if (!films.length) {
+    document.querySelector(".shell").innerHTML =
+      '<div class="missing">No film loaded. Run <b>./gradlew impact</b> or ' +
+      '<b>./gradlew smash</b>, then <b>node viewer/serve.js</b> and open this page from ' +
+      'that server.</div>';
+    return;
+  }
+
+  // ---------------------------------------------------------------- state
+  var film, frames, last, field, index, ext, curves, valueCells;
+  var playing = false;
+  var rafId = 0;
+  var lastTick = 0;
+
+  var css = getComputedStyle(document.documentElement);
+  function token(name) { return css.getPropertyValue(name).trim(); }
+  var RAMP = ["--ramp-0", "--ramp-1", "--ramp-2", "--ramp-3", "--ramp-4"].map(token);
+
+  var fieldBar = document.getElementById("fields");
+  var rail = document.getElementById("readouts");
+  var sceneBar = document.getElementById("scenes");
+
+  /** Short name for a scene button: the film title up to its first comma. */
+  function sceneName(f) {
+    var cut = f.title.indexOf(",");
+    return cut > 0 ? f.title.slice(0, cut) : f.title;
+  }
+
+  function load(which) {
+    setPlaying(false);
+    film = films[which];
+    frames = film.frames;
+    last = frames.length - 1;
+    field = Math.min(1, film.fields.length - 1);   // not the constant body map
+    index = last;                                  // open on the result, not the setup
+
+    // Scenes here span four decades of time -- a burst is tens of microseconds, a stack
+    // falling over is a third of a second -- so the unit follows the film rather than being
+    // fixed at whatever the first scene happened to need.
+    var span = frames[last].t;
+    var unit = span >= 1.0 ? [1, "seconds"] : span >= 1e-3 ? [1e3, "milliseconds"]
+      : [1e6, "microseconds"];
+    document.getElementById("standfirst").textContent = film.title + ". " +
+      film.elements + " elements, " + frames.length + " frames, " +
+      fmt(span * unit[0], span * unit[0] >= 100 ? 0 : 1) + " " + unit[1] + " of it.";
+    Array.prototype.forEach.call(sceneBar.children, function (c, j) {
+      c.setAttribute("aria-pressed", String(j === which));
+    });
+
+    // Fitted over every frame, so the bodies do not swim about inside a view that keeps
+    // rescaling to whatever they happen to be doing at that instant.
+    var lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    for (var i = 0; i < frames.length; i++) {
+      var r = frames[i].r, z = frames[i].z;
+      for (var k = 0; k < r.length; k++) {
+        if (r[k] < lo[0]) lo[0] = r[k];
+        if (r[k] > hi[0]) hi[0] = r[k];
+        if (z[k] < lo[1]) lo[1] = z[k];
+        if (z[k] > hi[1]) hi[1] = z[k];
+      }
+    }
+    lo[1] = Math.min(lo[1], 0);   // always show the anvil
+    ext = { r0: lo[0], z0: lo[1], r1: hi[0], z1: hi[1] };
+
+    buildFields();
+    buildReadouts();
+    buildCurves();
+    draw();
+  }
+
+  function buildFields() {
+    fieldBar.innerHTML = "";
+    film.fields.forEach(function (f, i) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.textContent = f.name;
+      b.setAttribute("aria-pressed", String(i === field));
+      b.addEventListener("click", function () {
+        field = i;
+        Array.prototype.forEach.call(fieldBar.children, function (c, j) {
+          c.setAttribute("aria-pressed", String(j === field));
+        });
+        draw();
+      });
+      fieldBar.appendChild(b);
+    });
+  }
+
+  function buildReadouts() {
+    rail.innerHTML = "";
+    valueCells = film.readouts.map(function (name) {
+      var row = document.createElement("div");
+      row.className = "readout";
+      var k = document.createElement("span");
+      k.className = "k";
+      k.textContent = name;
+      var v = document.createElement("span");
+      v.className = "v";
+      v.textContent = "—";
+      row.appendChild(k);
+      row.appendChild(v);
+      rail.appendChild(row);
+      return v;
+    });
+  }
+
+  films.forEach(function (f, i) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = sceneName(f);
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", function () { load(i); });
+    sceneBar.appendChild(b);
+  });
+  if (films.length < 2) sceneBar.hidden = true;
+
+  // ---------------------------------------------------------------- canvas
+  var stage = document.getElementById("stage");
+  var sctx = stage.getContext("2d");
+  var track = document.getElementById("track");
+  var tctx = track.getContext("2d");
+
+  function fit(canvas, ctx) {
+    var dpr = window.devicePixelRatio || 1;
+    var box = canvas.getBoundingClientRect();
+    canvas.width = Math.max(1, Math.round(box.width * dpr));
+    canvas.height = Math.max(1, Math.round(box.height * dpr));
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return { w: box.width, h: box.height };
+  }
+
+  function colour(t) {
+    if (!isFinite(t)) return "#444";
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    var x = t * (RAMP.length - 1);
+    var i = Math.min(RAMP.length - 2, Math.floor(x));
+    return mix(RAMP[i], RAMP[i + 1], x - i);
+  }
+  function mix(a, b, t) {
+    var A = hex(a), B = hex(b);
+    return "rgb(" + Math.round(A[0] + (B[0] - A[0]) * t) + "," +
+      Math.round(A[1] + (B[1] - A[1]) * t) + "," +
+      Math.round(A[2] + (B[2] - A[2]) * t) + ")";
+  }
+  function hex(h) {
+    var n = parseInt(h.replace("#", ""), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  function fmt(v, dp) {
+    if (!isFinite(v)) return "—";
+    // A count is a count. Readouts carry whatever the solver handed over, and a tally of
+    // eroded elements reading 32.000 looks like a measurement rather than a number of things.
+    if (dp === undefined && v === Math.round(v) && Math.abs(v) < 1e6) return String(v);
+    if (dp === undefined) dp = Math.abs(v) >= 100 ? 1 : Math.abs(v) >= 1 ? 3 : 4;
+    return v.toFixed(dp);
+  }
+
+  // ---------------------------------------------------------------- the stage
+  function draw() {
+    var box = fit(stage, sctx);
+    var f = frames[index];
+    var spec = film.fields[field];
+
+    // A stage with no width is not a small stage, it is a hidden one -- a collapsed container,
+    // a display:none ancestor, a tab that has never been shown. Every scale below it is then
+    // zero or negative, and the scale-bar search for a round number of millimetres never
+    // terminates. Leave, and redraw when something gives the canvas a size.
+    if (box.w < 2 || box.h < 2) return;
+
+    sctx.fillStyle = token("--stage");
+    sctx.fillRect(0, 0, box.w, box.h);
+
+    var pad = 34;
+    var sx = (box.w - 2 * pad) / (ext.r1 - ext.r0);
+    var sy = (box.h - 2 * pad) / (ext.z1 - ext.z0);
+    var s = Math.min(sx, sy);
+    var ox = (box.w - s * (ext.r1 - ext.r0)) / 2 - s * ext.r0;
+    var oy = box.h - (box.h - s * (ext.z1 - ext.z0)) / 2 - s * (-ext.z0);
+    function X(r) { return ox + s * r; }
+    function Y(z) { return oy - s * z; }
+
+    // The anvil. Drawn first and across the whole width, because it is not part of the
+    // body and should not look like it is.
+    var floor = Y(0);
+    sctx.strokeStyle = token("--anvil");
+    sctx.lineWidth = 1.5;
+    sctx.beginPath();
+    sctx.moveTo(0, floor);
+    sctx.lineTo(box.w, floor);
+    sctx.stroke();
+    sctx.lineWidth = 1;
+    sctx.globalAlpha = 0.55;
+    sctx.beginPath();
+    for (var h = -20; h < box.w + 20; h += 9) {
+      sctx.moveTo(h, floor + 11);
+      sctx.lineTo(h + 9, floor);
+    }
+    sctx.stroke();
+    sctx.globalAlpha = 1;
+
+    // The body at rest, as an outline, so the deformation has something to be measured
+    // against without a second panel.
+    if (index > 0) {
+      sctx.strokeStyle = "rgba(230,237,243,.16)";
+      sctx.lineWidth = 1;
+      strokeBoundary(frames[0], X, Y);
+    }
+
+    // Filled elements.
+    var vals = f.v[field];
+    var lo = spec.low, hi = spec.high;
+    var span = hi - lo || 1;
+    var conn = film.conn;
+    var live = f.live;
+    for (var e = 0; e < film.elements; e++) {
+      if (live && live.charCodeAt(e) === 48) continue;   // eroded, and no longer there
+      var b = e * 4;
+      sctx.fillStyle = colour((vals[e] - lo) / span);
+      sctx.beginPath();
+      sctx.moveTo(X(f.r[conn[b]]), Y(f.z[conn[b]]));
+      sctx.lineTo(X(f.r[conn[b + 1]]), Y(f.z[conn[b + 1]]));
+      sctx.lineTo(X(f.r[conn[b + 2]]), Y(f.z[conn[b + 2]]));
+      sctx.lineTo(X(f.r[conn[b + 3]]), Y(f.z[conn[b + 3]]));
+      sctx.closePath();
+      sctx.fill();
+    }
+
+    // The free surface, so the silhouette stays readable when neighbouring elements
+    // happen to be the same colour.
+    sctx.strokeStyle = "rgba(230,237,243,.55)";
+    sctx.lineWidth = 1.2;
+    strokeBoundary(f, X, Y);
+
+    // Scale bar, in millimetres, because every length in this scene is a few of them.
+    var mm = 10;
+    for (var g = 0; g < 24 && s * mm * 1e-3 > box.w * 0.28; g++) mm /= 2;
+    for (var g2 = 0; g2 < 24 && s * mm * 1e-3 < box.w * 0.08; g2++) mm *= 2;
+    var barPx = s * mm * 1e-3;
+    var bx = box.w - pad - barPx, by = box.h - 16;
+    sctx.strokeStyle = token("--stage-text");
+    sctx.lineWidth = 1;
+    sctx.beginPath();
+    sctx.moveTo(bx, by - 4); sctx.lineTo(bx, by);
+    sctx.moveTo(bx, by); sctx.lineTo(bx + barPx, by);
+    sctx.moveTo(bx + barPx, by); sctx.lineTo(bx + barPx, by - 4);
+    sctx.stroke();
+    sctx.fillStyle = token("--stage-text");
+    sctx.font = '11px "IBM Plex Mono", monospace';
+    sctx.textAlign = "center";
+    sctx.fillText(mm + " mm", bx + barPx / 2, by - 8);
+
+    sctx.textAlign = "left";
+    sctx.fillStyle = token("--stage-text");
+    sctx.fillText("anvil", 10, floor - 7);
+
+    document.getElementById("lo").textContent = fmt(lo);
+    // Say when the ramp is clipped, and to what. An auto range is the 99.5th percentile over
+    // the whole film, so a lone element far outside what the body ever reaches cannot flatten
+    // everything else onto the cold end -- but the reader has to be told that the brightest
+    // colour means "at least this", not "this".
+    var clipped = spec.auto && isFinite(spec.peak) && spec.peak > hi * 1.02;
+    document.getElementById("hi").textContent = (clipped ? "at least " : "") + fmt(hi);
+    document.getElementById("units").textContent = spec.units +
+      (clipped ? " (99.5th pct; one place reaches " + fmt(spec.peak) + ")"
+               : spec.auto ? " (fitted to the run)" : " (fixed)");
+
+    for (var m = 0; m < valueCells.length; m++) valueCells[m].textContent = fmt(f.s[m]);
+    document.getElementById("count").textContent =
+      "frame " + (index + 1) + " / " + frames.length;
+
+    drawTrack();
+  }
+
+  // The outline of what is left. On a scene that erodes, the free surface moves as elements
+  // go -- a body opened through the middle has two new surfaces that were interior a frame
+  // ago -- so it is rebuilt from the live set rather than taken from the film. Cached by the
+  // liveness string, which changes only when something actually erodes.
+  var boundaries = {};
+  function boundaryOf(f) {
+    if (!f.live) return film.boundary;
+    var have = boundaries[f.live];
+    if (have) return have;
+    var once = new Map();
+    for (var e = 0; e < film.elements; e++) {
+      if (f.live.charCodeAt(e) === 48) continue;
+      for (var k = 0; k < 4; k++) {
+        var a = film.conn[e * 4 + k], b = film.conn[e * 4 + (k + 1) % 4];
+        var key = a < b ? a * 1000000 + b : b * 1000000 + a;
+        if (once.has(key)) once.delete(key); else once.set(key, [a, b]);
+      }
+    }
+    var out = [];
+    once.forEach(function (v) { out.push(v[0], v[1]); });
+    boundaries[f.live] = out;
+    return out;
+  }
+
+  function strokeBoundary(f, X, Y) {
+    var bd = boundaryOf(f);
+    sctx.beginPath();
+    for (var k = 0; k < bd.length; k += 2) {
+      sctx.moveTo(X(f.r[bd[k]]), Y(f.z[bd[k]]));
+      sctx.lineTo(X(f.r[bd[k + 1]]), Y(f.z[bd[k + 1]]));
+    }
+    sctx.stroke();
+  }
+
+  // ---------------------------------------------------------------- the track
+  // Two curves against time: the energy the bracket still has, and the energy it has
+  // spent deforming. Where they cross is the impact, and it is why the track is the
+  // scrubber rather than a bare slider.
+  function buildCurves() {
+    var names = film.readouts;
+    var want = [];
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i].toLowerCase();
+      if (n.indexOf("kinetic") >= 0 || n.indexOf("dissipation") >= 0) want.push(i);
+    }
+    if (!want.length) want = [Math.min(1, names.length - 1)];
+    curves = want.map(function (i) {
+      var v = frames.map(function (f) { return f.s[i]; });
+      var hi = 0;
+      for (var k = 0; k < v.length; k++) if (isFinite(v[k]) && v[k] > hi) hi = v[k];
+      return { name: names[i], v: v, hi: hi || 1 };
+    });
+  }
+
+  function drawTrack() {
+    var box = fit(track, tctx);
+    if (box.w < 2 || box.h < 2) return;
+    tctx.clearRect(0, 0, box.w, box.h);
+    var pad = 6, top = 14, bot = box.h - 14;
+
+    tctx.strokeStyle = token("--rule-soft");
+    tctx.lineWidth = 1;
+    tctx.beginPath();
+    tctx.moveTo(pad, bot + .5);
+    tctx.lineTo(box.w - pad, bot + .5);
+    tctx.stroke();
+
+    var strokes = [token("--accent"), token("--ramp-3")];
+    curves.forEach(function (c, ci) {
+      tctx.strokeStyle = strokes[ci % strokes.length];
+      tctx.lineWidth = 1.8;
+      tctx.beginPath();
+      for (var i = 0; i < c.v.length; i++) {
+        var x = pad + (box.w - 2 * pad) * (i / (frames.length - 1 || 1));
+        var y = bot - (bot - top) * (c.v[i] / c.hi);
+        if (i === 0) tctx.moveTo(x, y); else tctx.lineTo(x, y);
+      }
+      tctx.stroke();
+      tctx.fillStyle = strokes[ci % strokes.length];
+      tctx.font = '10px "IBM Plex Mono", monospace';
+      tctx.textAlign = "left";
+      tctx.fillText(c.name, pad + 2 + ci * 132, 10);
+    });
+
+    var px = pad + (box.w - 2 * pad) * (index / (frames.length - 1 || 1));
+    tctx.strokeStyle = token("--text");
+    tctx.lineWidth = 1;
+    tctx.beginPath();
+    tctx.moveTo(px, top - 6);
+    tctx.lineTo(px, bot + 4);
+    tctx.stroke();
+    tctx.fillStyle = token("--text");
+    tctx.beginPath();
+    tctx.arc(px, top - 6, 3, 0, Math.PI * 2);
+    tctx.fill();
+  }
+
+  // ---------------------------------------------------------------- transport
+  function go(i) {
+    index = i < 0 ? 0 : i > last ? last : i;
+    draw();
+  }
+  function setPlaying(on) {
+    playing = on;
+    document.getElementById("play").textContent = on ? "Pause" : "Play";
+    if (on) {
+      if (index >= last) index = 0;
+      lastTick = 0;
+      rafId = requestAnimationFrame(tick);
+    } else {
+      cancelAnimationFrame(rafId);
+    }
+  }
+  function tick(now) {
+    if (!lastTick) lastTick = now;
+    if (now - lastTick >= 33) {       // about 30 frames a second, whatever the display does
+      lastTick = now;
+      if (index >= last) { setPlaying(false); return; }
+      go(index + 1);
+    }
+    if (playing) rafId = requestAnimationFrame(tick);
+  }
+
+  document.getElementById("play").addEventListener("click", function () { setPlaying(!playing); });
+  document.getElementById("rewind").addEventListener("click", function () {
+    setPlaying(false);
+    go(0);
+  });
+
+  function scrub(ev) {
+    var box = track.getBoundingClientRect();
+    var t = (ev.clientX - box.left - 6) / (box.width - 12);
+    go(Math.round(t * last));
+  }
+  track.addEventListener("pointerdown", function (ev) {
+    setPlaying(false);
+    track.setPointerCapture(ev.pointerId);
+    scrub(ev);
+  });
+  track.addEventListener("pointermove", function (ev) {
+    if (ev.buttons) scrub(ev);
+  });
+
+  window.addEventListener("keydown", function (ev) {
+    if (ev.key === " ") { ev.preventDefault(); setPlaying(!playing); }
+    else if (ev.key === "ArrowRight") { setPlaying(false); go(index + 1); }
+    else if (ev.key === "ArrowLeft") { setPlaying(false); go(index - 1); }
+    else if (ev.key === "Home") { setPlaying(false); go(0); }
+    else if (ev.key === "End") { setPlaying(false); go(last); }
+  });
+
+  var resizeTimer = 0;
+  window.addEventListener("resize", function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(draw, 80);
+  });
+
+  // ---------------------------------------------------------------- notes
+  document.getElementById("notes").innerHTML =
+    "<div><h3>What these are</h3><p>Three scenes from the same solver, none of which could " +
+    "have been <b>described</b> a week ago. A cross-section rather than a solid of " +
+    "revolution; thirteen separate bodies resting on one another; and a stack left alone " +
+    "under gravity until it falls over. The physics underneath is unchanged &mdash; the same " +
+    "return map, corotational update and crack-band softening the pressure-vessel gates run " +
+    "on.</p></div>" +
+    "<div><h3>What holds the wall up</h3><p>Penalty contact with a Coulomb cone. Every " +
+    "surface is both slave and master, so a pair is found from whichever side sees it more " +
+    "squarely, and the stiffness is built from the pair mass and the timestep rather than " +
+    "from a material &mdash; which is what lets steel meet copper without a rule for " +
+    "combining them. Momentum is exact to round-off; energy closes to a few per cent.</p></div>" +
+    "<div><h3>Why the stack can fall at all</h3><p>An explicit solve runs in microseconds " +
+    "and gravity works in milliseconds, so watching something drop used to cost a hundred " +
+    "thousand steps of nothing happening. Mass scaling buys the step back: four hundred " +
+    "times the mass is twenty times the step. It is a deliberate lie, and it is free here " +
+    "&mdash; a body rotating under its own weight turns at <b>g&middot;d/k&sup2;</b>, and " +
+    "the mass cancels exactly. What it does cost is landings, which hit twenty times too " +
+    "hard.</p></div>" +
+    "<div><h3>Why the edges are blocky</h3><p>Shapes are rasterised onto a square lattice. An " +
+    "explicit solve is paced by its <b>shortest edge</b>, and a mesher that trims cells " +
+    "against an outline makes slivers at every corner &mdash; one of them taxes every other " +
+    "element in the scene. Stair-steps halve when the cell halves. A sliver is a cliff that " +
+    "does not.</p></div>" +
+    "<div><h3>What it will not do</h3><p>Shatter. An element softened to nothing is deleted, " +
+    "so the slug perforates the wall rather than denting it &mdash; but copper is ductile and " +
+    "tears, it does not fragment. Fragments need a brittle material, and a brittle material " +
+    "needs a mesh a scene cannot afford: the crack-band limit puts the largest element that " +
+    "can hold an alumina at a few microns against the millimetre used here. A real " +
+    "constraint, not a missing feature.</p></div>";
+
+  // A canvas that starts hidden has no size to fit to, so watch for it gaining one rather
+  // than drawing once into nothing and leaving the page blank.
+  load(0);
+
+  if (window.ResizeObserver) {
+    var seen = 0;
+    new ResizeObserver(function (entries) {
+      var w = entries[0].contentRect.width;
+      if (w > 2 && w !== seen) { seen = w; draw(); }
+    }).observe(stage);
+  }
+
+})();
+</script>

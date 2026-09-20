@@ -2,372 +2,268 @@ package org.neofiz.solver;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.EnumSource;
 import org.neofiz.core.Formulation;
 import org.neofiz.core.Material;
+import org.neofiz.mesh.Outline;
 import org.neofiz.mesh.QuadMesh;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Tests for the rigid frictionless anvil.
+ * Penalty contact between deformable surfaces.
  *
- * <p>Contact has no closed form to check against, so what can be asserted are the
- * <em>conservation properties</em> and the discretisation behaviour. Those turn out to be
- * sharper than a tolerance on a displacement: the momentum identity below is exact to
- * floating point and it is sensitive to precisely the bookkeeping mistakes that are otherwise
- * invisible, and the convergence rate of the energy loss distinguishes an artefact that goes
- * away under refinement from one that does not.
+ * <p>There is no closed form for two meshed blocks hitting one another, so what this leans on
+ * instead are the invariants that hold whatever the collision does. Momentum is the strong one
+ * and it is exact: every pair applies equal and opposite forces, so the sum over the mesh
+ * cannot move at all, and a normal pointing the wrong way, a reaction on the wrong node or a
+ * weight that does not sum to one all break it immediately.
+ *
+ * <p>Energy is the weak one, and the thresholds here say so. Explicit penalty contact closes
+ * the budget to a few per cent, and the amount is set by the stiffness rather than by the mesh
+ * -- see {@link Contact} for the measured table. The audit is also read with
+ * {@link ExplicitSolver#centredKineticEnergy()} rather than the half-step kinetic energy,
+ * because a collision turns translation into vibration and the half-step form is biased for
+ * anything that vibrates. {@link EnergyAuditTest} pins that down separately, and it exists
+ * because this gate nearly blamed the bias on the contact model.
  */
 class ContactTest {
 
-    /** 4340 steel with a yield surface. Linear hardening; see TaylorImpactCase for the fit. */
-    private static final Material STEEL = Material.STEEL_4340.yielding(792.0e6, 850.0e6);
+    private static final double MM = 1.0e-3;
+    private static final double CELL = 1.0 * MM;
+    private static final double DEPTH = 10.0 * MM;
+    /** Elastic, so that anything the energy audit sees is contact rather than plasticity. */
+    private static final Material STEEL = Material.STEEL_4340;
 
-    private static final double DIAMETER = 7.595e-3;
-    private static final double SPEED = 181.0;
+    /** Two blocks with a gap between them, the left one twice as tall as the right. */
+    private static QuadMesh twoBlocks() {
+        return Outline.mesh(CELL,
+                Outline.rectangle(0.0, 0.0, 8.0 * MM, 12.0 * MM),
+                Outline.rectangle(13.0 * MM, 2.0 * MM, 21.0 * MM, 8.0 * MM));
+    }
 
-    /**
-     * A stubby projectile aimed at an anvil at z = 0. Deliberately short so that the tests
-     * run in milliseconds while still doing everything the reference case does: impact,
-     * spread, and separation.
-     */
-    private record Shot(ExplicitSolver solver, RigidWall anvil, QuadMesh mesh, int nr, int nz,
-                        double momentum0, double kinetic0) {
+    private static ExplicitSolver solver(QuadMesh mesh) {
+        return new ExplicitSolver(mesh, STEEL, Formulation.PLANE_STRAIN,
+                Integration.REDUCED, Kinematics.FINITE_STRAIN, DEPTH, 0.5);
+    }
 
-        void runTo(double seconds) {
-            while (solver.time() < seconds) solver.step();
-        }
-
-        /** Lowest current axial coordinate anywhere in the body. */
-        double lowestZ() {
-            double lo = Double.POSITIVE_INFINITY;
-            double[] uz = solver.axialDisplacement();
-            for (int n = 0; n < mesh.nodeCount; n++) lo = Math.min(lo, mesh.z[n] + uz[n]);
-            return lo;
-        }
-
-        /** Largest current radius on the impact face. */
-        double faceRadius() {
-            double max = 0.0;
-            double[] ur = solver.radialDisplacement();
-            for (int n : QuadMesh.nearFaceNodes(nr, nz)) max = Math.max(max, mesh.r[n] + ur[n]);
-            return max;
-        }
-
-        /** |change in axial momentum - anvil impulse| / |initial momentum|. */
-        double momentumError() {
-            return Math.abs((solver.axialMomentum() - momentum0) - anvil.impulse())
-                    / Math.abs(momentum0);
+    /** Drives everything left of the gap right at {@code v}, everything right of it left. */
+    private static void approach(ExplicitSolver s, QuadMesh mesh, double v) {
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            s.setVelocity(i, mesh.r[i] < 10.0 * MM ? v : -v, 0.0);
         }
     }
 
-    private static Shot shot(int nr, double length, Integration integration, double speed,
-                             double wallZ, double friction) {
-        final double radius = 0.5 * DIAMETER;
-        final double h = radius / nr;
-        final int nz = Math.max(1, (int) Math.round(length / h));
-
-        QuadMesh mesh = QuadMesh.solidCylinder(radius, length, nr, nz);
-        ExplicitSolver solver = new ExplicitSolver(mesh, STEEL, Formulation.AXISYMMETRIC,
-                integration, Kinematics.FINITE_STRAIN, 1.0, 0.5);
-        for (int n : QuadMesh.axisNodes(nr, nz)) solver.fixRadial(n);
-
-        RigidWall anvil = RigidWall.atZ(wallZ, friction);
-        solver.setRigidWall(anvil);
-        solver.setUniformVelocity(0.0, -speed);
-
-        return new Shot(solver, anvil, mesh, nr, nz,
-                solver.axialMomentum(), solver.kineticEnergy());
-    }
-
-    private static Shot shot(int nr, double length, Integration integration, double speed,
-                             double wallZ) {
-        return shot(nr, length, integration, speed, wallZ, 0.0);
-    }
-
-    private static Shot shot(int nr, Integration integration) {
-        return shot(nr, 10.0e-3, integration, SPEED, 0.0);
-    }
-
-    private static Shot shot(int nr, Integration integration, double friction) {
-        return shot(nr, 10.0e-3, integration, SPEED, 0.0, friction);
-    }
-
-    @ParameterizedTest
-    @EnumSource(Integration.class)
-    @DisplayName("no node ever crosses the anvil, at any step")
-    void nothingPenetrates(Integration integration) {
-        Shot s = shot(3, integration);
-
-        // Checked every step rather than at the end. A constraint that lets a node dip below
-        // the plane and pushes it back next step would pass a final-state check while having
-        // solved a different problem, and the recovery would be invisible in the answer.
-        while (s.solver().time() < 40e-6) {
-            s.solver().step();
-            assertTrue(s.lowestZ() >= 0.0,
-                    "a node reached z = " + s.lowestZ() + " at t = " + s.solver().time()
-                            + "; non-penetration is meant to be exact, not a tolerance");
-        }
-        assertTrue(s.anvil().impulse() > 0.0, "the anvil must actually have been hit");
-    }
-
-    @ParameterizedTest
-    @EnumSource(Integration.class)
-    @DisplayName("axial momentum change equals the anvil impulse, to floating point")
-    void momentumBalanceIsExact(Integration integration) {
-        Shot s = shot(3, integration);
-        s.runTo(40e-6);
-
-        // The strong audit, and the reason it is exact: every element's axial internal forces
-        // sum to zero, because the shape function derivatives are the gradient of a partition
-        // of unity. So nothing inside the mesh can move the body's axial momentum and the
-        // anvil's impulse is its entire history.
-        //
-        // This is the assertion that catches contact bookkeeping errors nothing else does.
-        // Splitting arrival into "land with the velocity that reaches the plane" and "stop on
-        // the following step" leaves the momentum destroyed by the second half belonging to no
-        // impulse; it is silent at first impact, where nodes already touching the plane land
-        // with zero velocity, and only appears once the contact patch spreads to nodes
-        // arriving from above. It reads as 1e-3 here.
-        assertTrue(s.momentumError() < 1e-11,
-                "momentum balance broken by " + s.momentumError()
-                        + " relative; the anvil is applying an impulse it is not accounting "
-                        + "for, or accounting for one it is not applying");
+    private static double total(ExplicitSolver s) {
+        return s.centredKineticEnergy() + s.strainEnergy() + s.hourglassEnergy()
+                + s.contact().energy() + s.contact().dissipation();
     }
 
     @Test
-    @DisplayName("an anvil that is not touched changes nothing at all")
-    void aWallBehindTheBodyIsANoOp() {
-        // Fired away from the anvil, which sits below the body and is never reached.
-        Shot away = shot(3, 10.0e-3, Integration.REDUCED, -SPEED, -1.0);
-        away.runTo(20e-6);
+    @DisplayName("two blocks in one mesh pass through each other without contact")
+    void withoutContactTheyInterpenetrate() {
+        // The state of affairs contact exists to end, asserted rather than assumed. Nothing in
+        // the force assembly couples separate element groups, so before this feature the two
+        // blocks were simulated correctly and independently, and met by overlapping.
+        QuadMesh mesh = twoBlocks();
+        ExplicitSolver s = solver(mesh);
+        approach(s, mesh, 60.0);
+        s.run(3000);
 
-        QuadMesh mesh = QuadMesh.solidCylinder(0.5 * DIAMETER, 10.0e-3, 3, away.nz());
-        ExplicitSolver free = new ExplicitSolver(mesh, STEEL, Formulation.AXISYMMETRIC,
-                Integration.REDUCED, Kinematics.FINITE_STRAIN, 1.0, 0.5);
-        for (int n : QuadMesh.axisNodes(3, away.nz())) free.fixRadial(n);
-        free.setUniformVelocity(0.0, SPEED);
-        while (free.time() < 20e-6) free.step();
-
-        assertEquals(0.0, away.anvil().impulse(), 0.0,
-                "an anvil nothing touched must deliver exactly zero impulse");
-        assertEquals(0.0, away.anvil().energyLoss(), 0.0,
-                "an anvil nothing touched must cost exactly zero energy");
-        assertEquals(0, away.anvil().contactCount(),
-                "an anvil nothing touched must report no contact");
-
-        // Not merely "small": the presence of an untouched constraint must not perturb the
-        // trajectory by a single bit, or the constraint is doing something when idle.
-        for (int n = 0; n < mesh.nodeCount; n++) {
-            assertEquals(free.axialDisplacement()[n], away.solver().axialDisplacement()[n], 0.0,
-                    "an untouched anvil altered the motion at node " + n);
+        double[] ur = s.radialDisplacement();
+        double leftFront = -Double.MAX_VALUE, rightBack = Double.MAX_VALUE;
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            if (mesh.r[i] == 8.0 * MM) leftFront = Math.max(leftFront, mesh.r[i] + ur[i]);
+            if (mesh.r[i] == 13.0 * MM) rightBack = Math.min(rightBack, mesh.r[i] + ur[i]);
         }
+        assertTrue(leftFront > rightBack,
+                "with no contact the faces should have crossed: " + leftFront + " vs " + rightBack);
     }
 
-    @ParameterizedTest
-    @EnumSource(Integration.class)
-    @DisplayName("contact releases on its own once the material pulls away")
-    void contactReleases(Integration integration) {
-        Shot s = shot(3, integration);
+    @Test
+    @DisplayName("a collision conserves momentum to round-off")
+    void momentumIsConserved() {
+        // The strongest statement available about contact, and the one that fails loudly for
+        // almost any mistake. Asymmetric blocks, so the total is not zero by construction and
+        // a sign error cannot hide inside it.
+        QuadMesh mesh = twoBlocks();
+        ExplicitSolver s = solver(mesh);
+        s.setContact(new Contact(mesh));
+        approach(s, mesh, 60.0);
 
-        // Tracked across the run rather than probed at a chosen instant. This specimen is
-        // short, so its wave transit is about 2 us and it has finished deforming and let go
-        // well inside 15 us -- any fixed probe time is really an assumption about the
-        // specimen's length.
-        int peakContact = 0;
-        double lastTouch = 0.0;
-        while (s.solver().time() < 120e-6) {
-            s.solver().step();
-            if (s.anvil().contactCount() > 0) {
-                peakContact = Math.max(peakContact, s.anvil().contactCount());
-                lastTouch = s.solver().time();
+        double before = s.radialMomentum();
+        s.run(4000);
+
+        assertEquals(before, s.radialMomentum(), 1e-9 * Math.abs(before),
+                "radial momentum moved during a collision");
+        assertEquals(0.0, s.axialMomentum(), 1e-12,
+                "a head-on collision must not produce axial momentum");
+    }
+
+    @Test
+    @DisplayName("the blocks bounce, nothing tunnels, and the energy is accounted for")
+    void elasticCollisionClosesTheEnergyBudget() {
+        QuadMesh mesh = twoBlocks();
+        ExplicitSolver s = solver(mesh);
+        s.setContact(new Contact(mesh));
+        approach(s, mesh, 60.0);
+
+        double initial = total(s);
+        boolean touched = false;
+        for (int k = 0; k < 400; k++) {
+            s.run(20);
+            if (s.contact().pairCount() > 0) touched = true;
+        }
+
+        assertTrue(touched, "the blocks never came into contact");
+        assertEquals(0, s.contact().escapedNodes(),
+                "a node it was resolving went too deep to resolve; see Contact");
+        // Four per cent, not a threshold chosen to pass: the measured closure at the default
+        // stiffness is 2.8 %, and the shape of that number is in Contact's class note.
+        assertTrue(Math.abs(total(s) / initial - 1.0) < 0.04,
+                "energy closed to " + (100.0 * (total(s) / initial - 1.0)) + " %");
+
+        // And they separated: the left block is no longer moving right.
+        double leftV = 0.0, leftM = 0.0;
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            if (mesh.r[i] < 10.0 * MM) {
+                leftV += s.velocityR()[i];
+                leftM++;
             }
         }
-
-        assertTrue(peakContact > 1, "the anvil was barely touched; nothing to release from");
-        assertTrue(lastTouch < 100e-6,
-                "contact was still live at " + lastTouch * 1e6 + " us, right up to the end of "
-                        + "the run; this test cannot tell release from a run that stopped too "
-                        + "early");
-
-        // Release is not a criterion here, it is a consequence: a node is held only while the
-        // internal force presses it into the plane. A stuck contact set would show up as a
-        // body still gripped long after the deformation has finished, which is the anvil
-        // developing a tensile grip it does not have.
-        assertEquals(0, s.anvil().contactCount(),
-                "the specimen is still gripped by the anvil after deformation stopped");
-        assertTrue(s.lowestZ() > 0.0,
-                "having released, the body must have left the plane; lowest z is "
-                        + s.lowestZ());
-        assertTrue(s.solver().axialMomentum() > 0.0,
-                "the specimen must be travelling away from the anvil after it lets go");
+        assertTrue(leftV / leftM < 0.0,
+                "the left block should have been turned around, mean v = " + leftV / leftM);
     }
 
     @Test
-    @DisplayName("the energy arrival destroys is first order in element size")
-    void arrivalEnergyLossConverges() {
-        // The one place this contact costs energy: a node's worth of lumped mass stopped in a
-        // single step, where the continuum stops an infinitesimal sliver. It is therefore
-        // proportional to the mass of the impact face, which is proportional to element size.
-        //
-        // The rate is what matters, not the magnitude. Letting the internal force accelerate a
-        // resting node for a full dt and then zeroing it also "loses a little energy per
-        // step", but summed over O(1/h) steps and O(1/h) contact nodes that version is O(1) --
-        // 13 % of the impact energy at every resolution, refinement or not. This test is the
-        // one that tells the two apart.
-        double coarse = lossFraction(3);
-        double fine = lossFraction(6);
-        double ratio = fine / coarse;
+    @DisplayName("penetration stays a small fraction of a cell")
+    void penetrationIsBounded() {
+        // What the mass-based stiffness is chosen for, and the reason the contact geometry
+        // means anything: a surface sunk a quarter of a cell into another is not a surface.
+        QuadMesh mesh = twoBlocks();
+        ExplicitSolver s = solver(mesh);
+        s.setContact(new Contact(mesh));
+        approach(s, mesh, 60.0);
 
-        assertTrue(ratio > 0.4 && ratio < 0.62,
-                "halving the element size should roughly halve the arrival loss; got "
-                        + coarse + " then " + fine + ", a ratio of " + ratio
-                        + ". A ratio near 1 means resting contact is bleeding energy every "
-                        + "step and no mesh will fix it");
-    }
-
-    private static double lossFraction(int nr) {
-        Shot s = shot(nr, Integration.REDUCED);
-        s.runTo(40e-6);
-        return s.anvil().energyLoss() / s.kinetic0();
-    }
-
-    @ParameterizedTest
-    @EnumSource(Integration.class)
-    @DisplayName("frictionless: the impact face slides outward freely")
-    void theFaceIsFreeToSpread(Integration integration) {
-        Shot s = shot(3, integration);
-        final double before = s.faceRadius();
-        s.runTo(40e-6);
-
-        // The anvil constrains the axial degree of freedom and nothing else. A face that
-        // could not slide would not mushroom at all, and the Taylor test would be measuring
-        // the wrong boundary condition -- fully stuck and frictionless bracket the real one,
-        // so which has been implemented has to be observable.
-        assertTrue(s.faceRadius() > before * 1.1,
-                "the impact face barely spread: " + before * 1e3 + " mm to "
-                        + s.faceRadius() * 1e3 + " mm. A frictionless anvil must leave the "
-                        + "radial degree of freedom completely alone");
-    }
-
-    // ------------------------------------------------------------------ Coulomb friction
-
-    @Test
-    @DisplayName("a zero coefficient is the frictionless path, bit for bit")
-    void zeroFrictionChangesNothing() {
-        // Friction was threaded through the same branch that previously had none, so the
-        // guarantee worth having is not "close" but "identical". Anything else means the
-        // frictionless results this project has already reported were quietly restated.
-        Shot without = shot(3, Integration.REDUCED);
-        Shot zero = shot(3, Integration.REDUCED, 0.0);
-        without.runTo(40e-6);
-        zero.runTo(40e-6);
-
-        for (int n = 0; n < without.mesh().nodeCount; n++) {
-            assertEquals(without.solver().radialDisplacement()[n],
-                    zero.solver().radialDisplacement()[n], 0.0, "radial drift at node " + n);
-            assertEquals(without.solver().axialDisplacement()[n],
-                    zero.solver().axialDisplacement()[n], 0.0, "axial drift at node " + n);
+        double worst = 0.0;
+        for (int k = 0; k < 400; k++) {
+            s.run(20);
+            worst = Math.max(worst, s.contact().maxPenetration());
         }
-        assertEquals(0.0, zero.anvil().frictionDissipation(), 0.0,
-                "a frictionless anvil must dissipate exactly nothing");
-    }
-
-    @ParameterizedTest
-    @EnumSource(Integration.class)
-    @DisplayName("friction restrains the spread and the axial audit survives it")
-    void frictionRestrainsSpreading(Integration integration) {
-        Shot free = shot(3, integration, 0.0);
-        Shot gripped = shot(3, integration, 0.2);
-        free.runTo(40e-6);
-        gripped.runTo(40e-6);
-
-        assertTrue(gripped.faceRadius() < free.faceRadius(),
-                "a frictional face spread to " + gripped.faceRadius() * 1e3 + " mm against the "
-                        + "frictionless " + free.faceRadius() * 1e3 + " mm; friction must "
-                        + "oppose sliding, not assist it");
-        assertTrue(gripped.anvil().frictionDissipation() > 0.0,
-                "sliding against friction must dissipate energy");
-
-        // The tangential constraint must not disturb the normal one. These are separate
-        // directions and the momentum identity is about the normal one alone, so it has to
-        // stay exact with friction switched on.
-        assertTrue(gripped.momentumError() < 1e-11,
-                "friction broke the axial momentum balance by " + gripped.momentumError());
+        assertTrue(worst > 0.0, "nothing ever touched");
+        assertTrue(worst < 0.10 * CELL,
+                "penetration reached " + (100.0 * worst / CELL) + " % of a cell");
     }
 
     @Test
-    @DisplayName("an infinite coefficient is the welded limit, and a large one converges to it")
-    void weldedIsTheLimitOfLargeFriction() {
-        // Infinity goes through the same cone test as every other coefficient rather than
-        // down a pinned-degree-of-freedom path beside it, so this is the check that the
-        // general arithmetic really does reach its own limit.
-        Shot welded = shot(3, Integration.REDUCED, Double.POSITIVE_INFINITY);
-        Shot large = shot(3, Integration.REDUCED, 5.0);
+    @DisplayName("a surface at rest does not contact itself")
+    void noSelfContactAtRest() {
+        // A closed surface is always exactly touching itself, so without the exclusions every
+        // segment would register against its neighbours and the body would leap apart on the
+        // first step. An L rather than a rectangle, because the re-entrant corner is where one
+        // ring of topological exclusion is not enough.
+        QuadMesh mesh = Outline.of(0.0, 0.0, 20.0 * MM, 0.0, 20.0 * MM, 6.0 * MM,
+                6.0 * MM, 6.0 * MM, 6.0 * MM, 20.0 * MM, 0.0, 20.0 * MM).mesh(CELL);
+        ExplicitSolver s = solver(mesh);
+        s.setContact(new Contact(mesh));
+        s.run(200);
 
-        // Tracked across the run, not read at the end: the stuck count is per-step, and by
-        // 40 us this specimen has finished deforming and left the anvil, so the final value
-        // is zero however well the friction worked.
-        int peakStuck = 0;
-        while (welded.solver().time() < 40e-6) {
-            welded.solver().step();
-            peakStuck = Math.max(peakStuck, welded.anvil().stuckCount());
+        assertEquals(0, s.contact().pairCount(), "a body at rest touched itself");
+        assertEquals(0, s.contact().escapedNodes(),
+                "a body at rest reported nodes tunnelling through it");
+        assertEquals(0.0, s.kineticEnergy(), 1e-18, "a body at rest started moving");
+    }
+
+    @Test
+    @DisplayName("a node is not caught by a surface it is not facing")
+    void facingIsRequired() {
+        // The bug this exists to stop, stated as a property. The region behind a segment is a
+        // half-plane, so every node of a block is arbitrarily deep behind the slabs of its own
+        // perpendicular faces, at projections landing squarely inside real segments. A block
+        // squeezed hard enough to bring those faces within the depth cap would then contact
+        // itself -- and, because the master is the deepest candidate, would prefer the
+        // imaginary pair to any real one.
+        QuadMesh mesh = Outline.rectangle(0.0, 0.0, 3.0 * MM, 3.0 * MM).mesh(CELL);
+        ExplicitSolver s = solver(mesh);
+        s.setContact(new Contact(mesh));
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            if (mesh.r[i] == 0.0) s.setVelocity(i, 120.0, 0.0);
+            if (mesh.r[i] == 3.0 * MM) s.setVelocity(i, -120.0, 0.0);
         }
-        large.runTo(40e-6);
+        s.run(1500);
 
-        assertEquals(welded.faceRadius(), large.faceRadius(), welded.faceRadius() * 1e-3,
-                "a large coefficient gave " + large.faceRadius() * 1e3 + " mm against the "
-                        + "welded " + welded.faceRadius() * 1e3 + " mm");
-        assertEquals(0.0, welded.anvil().frictionDissipation(), 0.0,
-                "a welded face never slides, so it cannot dissipate by sliding");
-        assertTrue(peakStuck > 1, "the welded face never reported itself stuck");
+        assertEquals(0, s.contact().pairCount(),
+                "a block crushed against itself found an imaginary contact");
     }
 
     @Test
-    @DisplayName("frictional dissipation vanishes at both limits and peaks between them")
-    void dissipationPeaksInTheMiddle() {
-        // The structural check on the whole model, and the one that would catch a sign error
-        // or a missing normal force. Dissipation is force times sliding distance, so it must
-        // go to zero at mu = 0 where there is no force and again as mu grows large where
-        // there is no sliding. A monotonic curve would mean one of the two factors is not
-        // being applied.
-        double none = dissipation(0.0);
-        double middle = dissipation(0.2);
-        double welded = dissipation(Double.POSITIVE_INFINITY);
+    @DisplayName("friction opposes sliding and is paid for out of the energy budget")
+    void frictionOpposesSliding() {
+        QuadMesh mesh = Outline.mesh(CELL,
+                Outline.rectangle(0.0, 0.0, 20.0 * MM, 5.0 * MM),
+                Outline.rectangle(5.0 * MM, 6.0 * MM, 13.0 * MM, 11.0 * MM));
 
-        assertEquals(0.0, none, 0.0);
-        assertEquals(0.0, welded, 0.0);
-        assertTrue(middle > 0.0, "a partly gripped face must dissipate something");
-        assertTrue(middle > dissipation(0.02) && middle > dissipation(2.0),
-                "dissipation should peak at moderate friction; got " + dissipation(0.02)
-                        + ", " + middle + ", " + dissipation(2.0));
+        double free = slideSpeed(mesh, 0.0);
+        double rough = slideSpeed(mesh, 0.4);
+        assertTrue(rough < free, "friction did not slow the slider: " + rough + " vs " + free);
+        assertTrue(rough > 0.0, "friction reversed the slider, which a cone cannot do");
     }
 
-    private static double dissipation(double friction) {
-        Shot s = shot(3, Integration.REDUCED, friction);
-        s.runTo(40e-6);
-        return s.anvil().frictionDissipation();
+    /** Mean sideways speed of the upper block after it is pressed down onto the lower one. */
+    private static double slideSpeed(QuadMesh mesh, double mu) {
+        ExplicitSolver s = solver(mesh);
+        Contact c = new Contact(mesh).withFriction(mu);
+        s.setContact(c);
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            if (mesh.z[i] > 5.5 * MM) s.setVelocity(i, 30.0, -40.0);
+            if (mesh.z[i] == 0.0) s.fixAxial(i);
+        }
+
+        double initial = total(s);
+        for (int q = 0; q < 30; q++) {
+            s.run(200);
+            System.out.printf("SLIDE mu=%.1f t=%5d pairs=%3d ke=%.3f se=%.3f cn=%.3f dis=%.3f tot=%.4f pen=%.3e esc=%d%n",
+                mu, (q + 1) * 200, c.pairCount(), s.centredKineticEnergy(), s.strainEnergy(),
+                c.energy(), c.dissipation(), total(s) / initial, c.maxPenetration(), c.escapedNodes());
+        }
+
+        assertTrue(c.dissipation() >= 0.0, "friction produced energy");
+        assertTrue(Math.abs(total(s) / initial - 1.0) < 0.10,
+                "the sliding run closed to " + (100.0 * (total(s) / initial - 1.0)) + " %");
+
+        double v = 0.0, n = 0.0;
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            if (mesh.z[i] > 5.5 * MM) {
+                v += s.velocityR()[i];
+                n++;
+            }
+        }
+        return v / n;
     }
 
     @Test
-    @DisplayName("the anvil's impulse is the initial momentum once the body is arrested")
-    void impulseAccountsForTheWholeApproach() {
-        Shot s = shot(4, Integration.REDUCED);
-        s.runTo(120e-6);
+    @DisplayName("a stiffness that could break the timestep is refused")
+    void refusesUnstableStiffness() {
+        // The bound is exact rather than advisory: omega*dt = sqrt(scale), and central
+        // difference is stable to 2. What it does not say is that the model is *useful* all
+        // the way there; Contact's table shows it is not.
+        QuadMesh mesh = twoBlocks();
+        assertThrows(IllegalArgumentException.class,
+                () -> new Contact(mesh).withStiffnessScale(4.0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Contact(mesh).withStiffnessScale(0.0));
+        assertThrows(IllegalArgumentException.class,
+                () -> new Contact(mesh).withFriction(-0.1));
+    }
 
-        // By the end the specimen has stopped and rebounded slightly, so the impulse delivered
-        // is a little more than the momentum it arrived with. Bracketing rather than
-        // asserting equality: the excess is the rebound, which is physical.
-        double arrival = Math.abs(s.momentum0());
-        assertTrue(s.anvil().impulse() > arrival,
-                "the anvil must have removed at least the momentum the specimen arrived with; "
-                        + "impulse " + s.anvil().impulse() + " against " + arrival);
-        assertTrue(s.anvil().impulse() < 1.2 * arrival,
-                "the anvil delivered " + s.anvil().impulse() + " against an arrival momentum "
-                        + "of " + arrival + "; a rigid anvil has no restitution, so anything "
-                        + "near twice this would mean it is throwing the specimen back");
+    @Test
+    @DisplayName("the surface is the free surface, and both blocks are on it")
+    void surfaceCoversEveryFreeEdge() {
+        // 8x12 and 8x6 blocks: two perimeters, 40 and 28 edges. Counting them by hand is the
+        // check that a mesh of several disconnected pieces is handled as one surface rather
+        // than as whichever piece a traversal happened to start on.
+        QuadMesh mesh = twoBlocks();
+        assertEquals(2 * (8 + 12) + 2 * (8 + 6), new Contact(mesh).segmentCount());
     }
 }

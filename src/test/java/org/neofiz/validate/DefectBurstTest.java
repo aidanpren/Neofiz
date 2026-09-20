@@ -186,4 +186,53 @@ class DefectBurstTest {
         assertTrue(peak[2] < 0.98 * perfect,
                 "but it must still be a long way from having evaporated");
     }
+
+    // ------------------------------------------------------------------ wall thickness
+
+    @Test
+    @DisplayName("a thicker wall holds more, in proportion, with defects in it")
+    void slendernessScales() {
+        // The design map's x axis. Burst pressure goes as t/r, so halving the slenderness at
+        // a fixed mean radius should double the capacity -- and it should keep doing that
+        // with a defect field switched on, because the knockdown is a fraction rather than a
+        // pressure. If it did not, the map's columns would not be comparable.
+        Setup thin = small().withSlenderness(40.0);
+        Setup thick = small().withSlenderness(20.0);
+
+        double thinPeak = DefectBurst.fire(1, thin).peakCapacity();
+        double thickPeak = DefectBurst.fire(1, thick).peakCapacity();
+
+        assertEquals(2.0, thickPeak / thinPeak, 0.05,
+                "halving D/t should about double the burst pressure; got "
+                        + (thickPeak / thinPeak));
+
+        // Both knocked down from their own defect-free reference by a similar fraction, which
+        // is what makes a derating rule a rule rather than a table.
+        double thinRatio = thinPeak / DefectBurst.referencePressure(40.0);
+        double thickRatio = thickPeak / DefectBurst.referencePressure(20.0);
+        assertTrue(thinRatio < 0.98 && thickRatio < 0.98,
+                "the defect field should cost both tubes something: "
+                        + thinRatio + " and " + thickRatio);
+        assertEquals(thinRatio, thickRatio, 0.02,
+                "the knockdown should be a fraction, not a pressure: "
+                        + thinRatio + " against " + thickRatio);
+    }
+
+    @Test
+    @DisplayName("the geometry helpers agree with the setup they describe")
+    void geometryHelpersAgree() {
+        Setup setup = small().withSlenderness(20.0);
+        assertEquals(2.0 * DefectBurst.MEAN_RADIUS / 20.0, setup.thickness(), 0.0);
+        // To a rounding error rather than to the bit: the two expressions multiply the same
+        // three numbers in a different order.
+        assertEquals(Math.sqrt(DefectBurst.MEAN_RADIUS * setup.thickness()),
+                DefectBurst.shearLagLength(20.0), 1e-15);
+
+        // The no-argument forms are the nominal tube and must not drift away from it.
+        assertEquals(DefectBurst.referencePressure(DefectBurst.SLENDERNESS),
+                DefectBurst.referencePressure(), 0.0);
+        assertEquals(DefectBurst.shearLagLength(DefectBurst.SLENDERNESS),
+                DefectBurst.shearLagLength(), 0.0);
+        assertEquals(DefectBurst.SLENDERNESS, Setup.nominal().slenderness(), 0.0);
+    }
 }

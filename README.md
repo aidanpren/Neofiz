@@ -15,8 +15,51 @@ integration, full or reduced quadrature, J2 plasticity with combined isotropic a
 hardening, Johnson–Cook flow stress with adiabatic thermal softening, updated Lagrangian
 kinematics with an objective stress update, a rigid anvil with a Coulomb cone, a threaded
 kernel that is bit-for-bit identical at any thread count, a mesh-independent Weibull defect
-field, and progressive softening regularised by fracture energy per unit crack area. 218 tests
+field, and progressive softening regularised by fracture energy per unit crack area. 313 tests
 green.
+
+**You can now watch a run instead of reading its summary.** `./gradlew burstFilm` keeps the
+deformed geometry at every sample and writes it out; `viewer/burst-viewer.html` plays it back
+with a scrub track that is the wall-capacity curve, the burst marked on it. Two things the
+first render made obvious that no number had. A true-scale section of this tube is unreadable
+— the wall is 4 % of the diameter, so it draws as two hairlines around an enormous hole, and
+the bore has to be cut away the way a sectional drawing would. And **there is no crack**: the
+bulge ratio is 1.009 and damage at the last frame runs 0.77 to 1.00 across the *whole* wall,
+so the tube softens almost uniformly rather than necking. That is the parallel-rings result
+and the non-converging burst pressure, seen directly for the first time.
+
+**The first scene that is not a solid of revolution.** `./gradlew impact` throws an L-shaped
+bracket — steel foot, copper leg, welded at the interface — onto a rigid anvil in plane
+strain, and `viewer/scene-viewer.html` plays it. Three restrictions had to go to make that
+sentence expressible: one material per mesh, two hardcoded mesh generators, and a solver
+whose `PLANE_STRAIN` flag had existed since M0 with nothing built on it. None of them was the
+physics. The constitutive code is untouched, and a single-material mesh now reaches the
+kernel through `Materials` **bit-for-bit** identically to the way it did through a constant,
+which is what lets every gate above keep testing what it was written to test.
+
+**Bodies can now touch each other.** `./gradlew smash` fires a steel slug through a stacked
+wall of twelve copper blocks — thirteen separate bodies in one solve, resting on one another
+and on the floor, with a Coulomb cone between every pair. That took penalty contact
+(`Contact`), a mesher that can produce bodies which *touch* rather than weld
+(`Outline.assemble`), and gravity, which the solver had never had. Momentum through a
+collision is exact to round-off; energy closes to a few per cent, and the whole shape of that
+number is written up below.
+
+**And things now come apart.** An element softened to nothing is deleted and the free surface
+closes around the hole, so the slug perforates the wall instead of pushing a permanent dent
+ahead of it — 32 of 652 elements at 700 m/s, none of them inverted. Deletion is bookkeeping
+rather than physics, and the division matters: the *softening* that gets an element to zero
+strength is regularised by fracture energy and is mesh-independent; deletion only disposes of
+something that can no longer be integrated. Mass and nodes stay, so momentum does not move,
+and the elastic energy that leaves with the debris is reported rather than dropped.
+
+**And things can now simply fall over.** `./gradlew topple` leans five 40 mm blocks into a
+staircase and lets go: nothing is thrown, gravity does all of it, and 320 ms of physics costs
+4 s of wall clock. That was unaffordable a day ago — an explicit solve runs in microseconds
+and gravity works in milliseconds, so every scene before this one had to *begin* already
+stacked. `setMassScaling` buys the step back, and the lattice mesher makes the cheap form of
+it the right form: on a mesh where every element is the same size, uniform scaling **is**
+selective scaling.
 
 Every conservation audit on the Taylor case is exact or converging. Three findings shaped it,
 and none of them were the one expected going in:
@@ -72,9 +115,41 @@ reads it; the same tube now bursts at six pressures in six places. Along the way
 See [M2](#m2--the-defect-field) and
 [M2's second half](#m2s-second-half--what-the-solver-does-with-it).
 
+**M3 has started, and the first sweep already answers its exit criterion.** The burst
+harness no longer throws its curve away, and twelve tubes swept across a decade of wall
+thickness return `P ∝ t^0.9989` with a worst residual of 0.02 % — Barlow's formula, measured
+off the solver, which was never told what Barlow's formula is. The bore-diameter sweep is the
+more interesting of the two, because it comes back *wrong*: `d^-0.9666`, with 1.3 % of
+structure the exponent is flattening out. Plot the identical runs against the **mean**
+diameter and the bend disappears and the exponent snaps to −0.9989. Equilibrium is written on
+the mean radius; a wall does not know what its bore diameter is. Nobody was told that either —
+it arrived as curvature in a residual plot. See [the first sweep](#the-first-sweep--barlow-measured).
+
+**And the design map exists.** 108 tubes, 29 seconds, and the boundary between *holds* and
+*bursts* comes out as a band rather than a line — which is the image the build plan calls the
+single most valuable one in the product. Two things about it were not expected. The band is
+**narrower than a pixel** on axes wide enough to show the whole design range, because the
+scatter is 0.8 % and the range is a factor of three; it only resolves once the pressure axis
+is divided through by each column's own defect-free burst pressure. And once it resolves it
+**slopes**: 6.90 % knockdown at a 1.25 mm wall against 7.75 % at 4.00 mm. That is a size
+effect — more material, more chances at a bad patch — and it is *ten times weaker* than
+weakest-link theory's `V^(1/m)` asks for over the same range. Which is the M2 parallel-rings
+result, arrived at from a different experiment and not looked for. See
+[the design map](#the-design-map).
+
 ```
-./gradlew run     # the M0 report
-./gradlew test    # the validation gates
+./gradlew run           # the M0 report
+./gradlew test          # the validation gates
+./gradlew burstCurve    # the pressure-expansion curve, through the maximum
+./gradlew barlowSweep   # two sweeps, and the exponents they produce
+./gradlew designMap     # wall thickness against applied pressure, with scatter
+./gradlew burstFilm     # captures a burst frame by frame into runs/film.js
+./gradlew impact        # a two-material bracket on an anvil, into runs/bracket.js
+./gradlew smash         # a slug through a stacked wall, into runs/smash.js
+./gradlew topple        # a leaning stack falls over, into runs/topple.js
+./gradlew bench         # where the time goes, in element-steps per second
+./gradlew history       # every run recorded, from runs/log.csv
+node viewer/serve.js    # plays either film at http://localhost:8731
 ```
 
 ### Gate 1 — correctness
@@ -958,10 +1033,111 @@ is a bulge and not a neck for a second reason as well: with ε_z = 0 the wall ca
 along z, because neighbouring rings may move by different amounts, but it cannot draw material
 along the tube into the neck.
 
+### The first sweep — Barlow, measured
+
+The M3 exit criterion in the build plan is that *a player rediscovers Barlow from a sweep
+without being told*. `./gradlew barlowSweep` is the machine half of that, and it costs 24 runs
+and 11 seconds on eight cores. Nothing in it consults `Burst.barlow`; the exponents come off
+the finite element solver, and the rule of thumb is compared against them afterwards.
+
+| Sweep | Fit | Worst residual |
+| --- | --- | --- |
+| wall thickness, D/t from 100 to 10, mean radius fixed | `P ∝ t^0.9989` | 0.020 % |
+| bore diameter, factor of 8, wall fixed at 2 mm | `P ∝ d^-0.9666` | 1.279 % |
+| **the same runs against the mean diameter** | `P ∝ D^-0.9989` | 0.019 % |
+
+Three things came out of it, and the second was not expected:
+
+- **The exponents are the shape of the law; the coefficient is the material in it.** The
+  thickness sweep ran at a fixed mean diameter, so solving its fitted coefficient for σ in
+  `P = 2σt/D` gives **225.54 MPa** against the flow curve's own effective stress of 226.48 MPa
+  — 0.42 % low, which is exactly the single-run creep bias every point carries. The solver
+  recovered how strong the copper is from twelve tubes of different thicknesses bursting.
+- **The bore-diameter sweep is wrong in a way that teaches something.** With the wall held
+  fixed, burst pressure goes as `1/(d + t)`, which is not a power law in `d` at all. The fit
+  returns −0.9666 and hides the rest in a residual, and the residual plot is a clean arch
+  rather than noise. That arch *is* the distinction between Barlow written on the bore, the
+  mean and the outside diameter, and it is most of why the rule of thumb is conservative.
+  A fit reported without its residual would have called this a success.
+- **`r²` is useless here and is reported anyway because people expect it.** It is 0.999907 on
+  the bent fit — indistinguishable, at a glance, from the 1.000000 on the clean one. Over a
+  decade in `x`, a power law fit has an `r²` of three nines almost regardless of how badly it
+  is wrong in the middle. `PowerLaw.maxResidualPercent` is the number to read first, and the
+  tests assert both halves of that: that the residual notices the structure and that `r²`
+  does not.
+
+Both thickness and diameter exponents land at 0.9989 in magnitude, and the residual arch on
+the *thickness* sweep is the same shape at ±0.02 %. That is the second-order thick-wall term
+that `Burst`'s mean-radius formulation was chosen to leave behind, showing up as the only
+thing left once the first-order error is gone.
+
+### The design map
+
+`./gradlew designMap` fires nine wall thicknesses, twelve nominally identical tubes each, and
+colours every cell of a wall-thickness-against-applied-pressure grid by how many of them gave
+way. 108 runs, 29 s on eight cores, 2.1 s of solver per tube.
+
+**The pressure axis is free, and that is worth saying out loud.** A map of *n* thicknesses by
+*m* pressures looks like `n·m` runs and is not. A tube's burst pressure is a property of the
+tube — the maximum of the wall's own load capacity, read off an equilibrium identity, measured
+without reference to what ceiling the harness used to find it. So a tube bursts under applied
+pressure `P` exactly when `P` exceeds its capacity, one population per thickness answers every
+pressure at once, and the pressure resolution is limited by nothing but how many rows fit on a
+terminal. The obvious implementation is two orders of magnitude more expensive and produces
+the same picture.
+
+| wall, mm | D/t | mean burst | defect-free | knockdown | scatter |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1.250 | 40.0 | 10.542 MPa | 11.324 MPa | −6.90 % | 0.81 % |
+| 2.236 | 22.4 | 18.801 MPa | 20.257 MPa | −7.19 % | 0.77 % |
+| 4.000 | 12.5 | 33.430 MPa | 36.237 MPa | −7.75 % | 0.72 % |
+
+- **The band is sub-pixel on the axes anyone would choose first.** The widest column spans
+  0.800 MPa from its weakest tube to its strongest, against a row height of 1.213 MPa on a
+  map covering the whole design range. On those axes the boundary is a clean staircase and it
+  would be easy — and wrong — to read that as the band not existing. Divide the pressure axis
+  through by each column's own defect-free burst pressure and it opens up across seventeen
+  rows. The report draws both and says which is which.
+- **The band slopes, and the slope is the interesting number.** Knockdown runs from 6.90 % at
+  1.25 mm of wall to 7.75 % at 4.00 mm — a size effect over a factor of 3.2 in material.
+  Weakest-link theory says `V^(−1/m)` over that range, which at `m = 12` is a **9.24 %** fall.
+  The measured fall is **0.91 %**, smaller by a factor of ten. The size effect is real and it
+  is nothing like as strong as a chain of links would make it, which is exactly the M2 finding
+  — a pressurised shell averages its defects over the shear-lag length — reproduced from an
+  experiment that was not designed to test it.
+- **Knockdown and scatter are both fractions, not pressures.** That is what makes the
+  normalised band nearly horizontal, and it is what makes a derating rule a rule rather than a
+  table. It is also a safety factor in the literal sense, derived from tubes rather than looked
+  up.
+
+`DefectBurst.Setup` gained a `slenderness` so the wall could be swept at all; it previously
+hardcoded the reference tube's. Holding the element *count* through the wall rather than the
+element *size* is deliberate — the through-wall discretisation error is then identical at every
+column, so what moves between columns is physics. It does mean a thin wall costs more, because
+the radial element shrinks with the wall and the CFL timestep follows it.
+
+### What the curve was hiding
+
+`./gradlew burstCurve` traces the reference tube's `P(ε_θ)` through the maximum instead of
+reporting one point off the top of it. The peak was never the interesting part:
+
+- **Nothing breaks and no criterion is consulted.** The curve rises while strain hardening
+  wins, flattens as the wall thins and the radius grows, and turns over where geometry starts
+  winning. The turnover is a 0.5 % feature on a 19 MPa curve, which is why the report draws it
+  twice — once on axes that show the elastic rise and the yield knee, and once with the
+  pressure axis opened up, where it is the only thing on the page.
+- **The gap between the two curves past the peak is the instability, drawn.** Applied bore
+  pressure sits on its ceiling; the wall's capacity falls away beneath it; the difference is
+  the unbalanced force accelerating the wall outward. Up the stable branch they track each
+  other to within the relaxation drag, and that agreement is what licenses reading the
+  capacity past the peak at all.
+
 ## Layout
 
 ```
 core/     Formulation (the axisym / plane-strain / plane-stress flag), Material
+          Materials — which material each element is; the uniform case is one
+              reference, so a single-substance mesh is unchanged bit for bit
           JohnsonCook — flow stress: strain, rate and thermal terms
           Weibull — the weakest-link algebra; minimumOf(n) is the whole of it,
               and forVolume is a call to it rather than the same formula twice
@@ -971,6 +1147,11 @@ core/     Formulation (the axisym / plane-strain / plane-stress flag), Material
 mesh/     QuadMesh — flat primitive arrays, the layout that ports to a GPU kernel
               cylinderWall for the annulus, solidCylinder for the Taylor specimen
               ringVolume — Pappus, 2*pi*rc*A, the volume a defect draw normalises by
+          Outline — any polygon, holes included, rasterised onto a square lattice
+              because a fitted mesher makes slivers and slivers set the timestep
+              rotated/translated/restingOn, and one lattice for many shapes
+              mesh welds shapes that touch into one body; assemble keeps them
+              separate, which is the difference between a clad plate and a stack
 solver/   ExplicitSolver — the hot loop
           Parallel — spin-barrier worker pool; chunks from a shared cursor,
               which is safe only because nothing accumulates per chunk
@@ -984,6 +1165,13 @@ solver/   ExplicitSolver — the hot loop
           Corotational — objective incremental rotation
           RigidWall — kinematic anvil with a Coulomb cone; stick/slip is a
               return map, same shape as J2
+          Contact — penalty between deformable surfaces. Stiffness from the pair
+              mass and the reference step, so it is material- and formulation-
+              agnostic; three tests decide a pair, and the one that is easy to
+              miss is that the two surfaces have to FACE each other
+          ExplicitSolver also carries gravity, erosion and mass scaling, all
+              off by default so that every validation gate runs the arithmetic
+              it always did
 validate/ Lamé and ElasticPlastic closed forms, the cylinder cases,
               TaylorImpactCase — the M1 gate, which has no closed form,
               Burst — the instability condition, the P(ε) curve, Considère,
@@ -994,6 +1182,35 @@ validate/ Lamé and ElasticPlastic closed forms, the cylinder cases,
                   thing, volley pools a population, shearLagLength is the number
                   the correlation length has to be compared against
               MeshConvergence — Richardson extrapolation and the GCI band
+sweep/    Sweep — one parameter varied, one run per thread, results in parameter
+              order; linear and logarithmic spacings with exact endpoints
+          PowerLaw — the log-log fit. maxResidualPercent is the statistic that
+              matters, because r² stays above 0.999 on data the exponent is
+              visibly wrong about
+report/   Plot — a line chart in characters, for keeping a curve visible before
+              any of the product's plotting exists
+          Heatmap — the two-parameter map. Blank for zero, because on a map
+              whose point is where the outcome changes, the quiet region
+              should carry no ink and the boundary should be the thing with it
+          Csv — the same curve at seventeen digits, for plotting it properly
+          RunLog — one appended line per run: what went in, what came out. Text,
+              because a log nobody can read is not a log; parameters are the
+              identity, so lastMatching answers "have I run this already"
+          Runs — where traces land. Not out/, which the IDE already claims
+render/   Film — deformed geometry over a run, plus per-element fields and
+              readouts. boundaryEdges finds the free surface from connectivity
+              alone, so it keeps working for shapes QuadMesh cannot yet make.
+              Film.AUTO fits a colour ramp to the 99.5th percentile and reports
+              the peak beside it, so one wild element cannot flatten the picture
+viewer/   burst-viewer.html — the tube. The scrub track is the wall capacity
+              curve, so the burst is a point on the control itself
+          scene-viewer.html — any planar film: deformed mesh, four fields, the
+              anvil, and the bodies at rest as an outline behind them. On a scene
+              that erodes it rebuilds the outline per frame from the live set,
+              because the free surface moves as elements go. Every film
+              file appends itself to one global array, so a page that includes
+              several of them gets a scene selector and none of them knows it
+          serve.js — pages from viewer/, film data from runs/
 ```
 
 ### Knowing how much to believe a number
@@ -1132,41 +1349,251 @@ And one that is a stated principle: **no mass scaling, ever.** It is the standar
 making explicit dynamics affordable and it corrupts exactly the inertial behaviour this
 project is about. Offline solve is what buys the right to refuse it.
 
+## Direction
+
+**The target is a general 2D destruction sandbox**, physically accurate rather than exactly
+real, in which a thing you cannot do should be a scope decision — *the game does not grow
+trees* — and never a solver limitation. Everything above is the validation programme that
+says the material model is right. It is the test rig, not the game, and from here it is
+frozen as a regression suite rather than extended.
+
+What that target refuses today, and none of it is the physics:
+
+| Needed | Today |
+| --- | --- |
+| Many materials in one scene | **Done** — `Materials`, one `Material` per element |
+| Arbitrary shapes | **Done** — `Outline`, any polygon with holes, rasterised to quads |
+| Cross-sections, not lathe shapes | **Done** — `PLANE_STRAIN`, and `Impact` is built on it |
+| Objects that touch each other | **Done** — `Contact`, penalty, node against segment |
+| Things falling | **Done** — `setGravity`, a uniform body force, off by default |
+| Things breaking into pieces | **Done** -- elements softened to nothing are deleted |
+| Mixed-scale scenes | **Done** -- `setMassScaling`, exact on a lattice; see below |
+
+What is left is speed, and the estimate this section used to carry was wrong by an order of
+magnitude. `./gradlew bench` measures it instead, on two blocks meeting at 120 m/s:
+
+| configuration | element-steps/s |
+| --- | --- |
+| bare elements, finite strain | 9.03 × 10⁶ |
+| + damage and erosion | 7.83 × 10⁶ |
+| + rigid floor | 6.19 × 10⁶ |
+| + deformable contact | 3.60 × 10⁶ |
+| bare, 4 threads | 2.42 × 10⁷ |
+| + contact, 4 threads | 9.21 × 10⁶ |
+
+The **kernel scales**: quadrupling the mesh leaves the per-element rate at 0.97× of the small
+one, so the element loop is doing the same work per element however big the scene gets.
+Contact does not — at the 4× mesh it drops another third.
+
+The contact **search** is threaded and the accumulation is not, which is the only split that
+keeps the answer reproducible: a search writes nothing but its own node's master, while a sum
+into shared force arrays has an order that is part of the result. That, plus tightening the
+broad-phase cell from twice the longest segment to 1.5 times it — the smallest radius that
+still reaches every segment a node could be touching, since a touching node is at most
+`√(0.5² + 1²) = 1.12` segment lengths from that segment's ends — took the threaded sandbox
+case from 8.22 to 9.21 × 10⁶, with every number in the slug scene bit-identical.
+
+The gap against the M0 cost model above (4.0 × 10⁷ single-threaded) is not a regression: that
+was a small-strain elastic run with nothing touching anything. Finite strain rebuilds the
+geometry every step, and contact is 2.5× the whole element kernel on its own. Both are what a
+sandbox scene actually needs.
+
+What that costs, for a 200 mm square of copper:
+
+| cell | elements | step | hours per simulated second |
+| --- | --- | --- | --- |
+| 8 mm | 625 | 892 ns | 0.1 |
+| 4 mm | 2 500 | 446 ns | 0.4 |
+| 2 mm | 10 000 | 223 ns | 3.5 |
+| 1 mm | 40 000 | 112 ns | 27.6 |
+| 0.5 mm | 160 000 | 56 ns | 221 |
+
+Cost goes as the **cube** of linear resolution — the mesh grows as the square and the timestep
+shrinks with the cell — which is why quoting a frame rate for one mesh says nothing about
+another. Six minutes of compute for one second of physics at a coarse 8 mm, and a day at
+1 mm, **unscaled**. Mass scaling divides those by the factor it buys — which is how a 320 ms
+topple fits into four seconds of wall clock — and threading and a GPU are what is left after
+that. Commit-and-watch is not a design preference here; it is what the arithmetic allows.
+
+### What the mesher refuses to do, and why
+
+`Outline` rasterises a polygon onto a square lattice and keeps the cells whose centres fall
+inside, so boundaries come out stair-stepped. A fitted mesher that followed the outline is the
+obvious thing to want, and it is the wrong trade here. An explicit solve is paced by the
+**shortest edge anywhere on the mesh**; trimming cells against an outline makes slivers at
+every corner, unpredictably, as a function of where the shape happened to be drawn, and one
+sliver in ten thousand elements slows every other element by the same factor. On a lattice
+every edge is the cell size, so the stable step is known before the mesh exists. Stair-steps
+are a resolution error that halves when the cell halves. A sliver is a performance cliff that
+does not.
+
+The lattice is anchored at the origin rather than at each shape's bounding box, so shapes
+meshed together land on the same cells and share nodes where they touch. Shared nodes are a
+*welded* joint, which is right for a clad plate and is not a substitute for contact.
+
+### Contact, and two things that went wrong on the way
+
+Penalty contact has one genuinely free parameter — the stiffness — and the usual way to build
+it, from a bulk modulus and an element size, makes it a material property and therefore
+ambiguous the moment steel meets copper. The mass-based form avoids that:
+
+```
+k = SCALE · m* / dt₀²        ⇒        ω = √SCALE / dt₀
+```
+
+The frequency it adds depends on nothing but `SCALE`. Central difference is stable to
+`ω·dt < 2`, and every surface here is both slave and master so a pair is found twice, which
+puts the bound at `SCALE < 2`. It is also formulation-agnostic for free: an axisymmetric
+node's mass is already a ring mass, so `k` comes out as a ring stiffness with no special case.
+
+Being stable is not being usable. Measured on the head-on collision the gate runs:
+
+| SCALE | energy closes to | deepest penetration |
+| --- | --- | --- |
+| 0.01 | −3.2 % | 25.5 % of a cell |
+| 0.05 | +2.8 % | 8.7 % |
+| **0.10** | **+2.2 %** | **4.6 %** |
+| 0.20 | +6.0 % | 3.5 % |
+| 0.80 | +4.1 % | 1.6 % |
+| 1.50 | +553 % | 0.4 % |
+| 3.00 | diverges | |
+
+Soft, and surfaces sink far enough in that nodes slide out of the projection windows they were
+resolving — the spring vanishes without doing the work of releasing, and energy is *lost*.
+Through the middle two decades it is a few per cent with no clean trend: it is the size of the
+discrete release impulse, and it does not fall under mesh refinement. A **resting** contact is
+much better than that suggests — a block dropped on another and slid across it closes to
+0.15 % over six thousand steps.
+
+**The audit was lying, and not about contact.** The collision appeared to gain 4 % and the
+obvious suspect was the model that had just been added. It was not. Central difference carries
+velocity at half steps and displacement at whole ones, so `KE + SE` adds two numbers from two
+different instants, and the error is `(dt/2)·d(KE)/dt` — *first* order in the step. It costs
+nothing on a body in rigid translation and it is real for anything vibrating, which is exactly
+what a collision produces. A bar with nothing to hit, given a standing wave, already moves the
+budget by **1.36 %**. The fix is exact and free: the velocity half a step further on is
+`v + dt·f/m` with the force already assembled, so the centred velocity is `v + (dt/2)·f/m`.
+Measured on that bar, the audit goes 1.36 % → 0.16 %, and the convergence order goes from 1.05
+to 2.05. `centredKineticEnergy()` is now what every energy gate here reads.
+
+**One spurious pair was worth more than the impact.** A block sliding across another gained
+245 % of its energy, which read exactly like friction pumping. The cause was a contact between
+two *perpendicular* surfaces — a top-face node of the lower block, normal straight up, against
+the vertical side face of the upper one, normal straight out. Their dot product is exactly
+zero, so an epsilon test admitted it the instant a hair of elastic deformation tipped the node
+normal negative, and it came in with a depth equal to the whole sideways overlap rather than to
+any penetration. One pair, 2.4 J, against a 2.5 J impact. The region behind a segment is a
+half-plane and not a box, and that is the part that is easy to get wrong.
+
+The fix is a real angle rather than an epsilon: surfaces have to face each other within about
+104°. It costs nothing, because a contact seen at a glancing angle from one side is seen
+head-on from the other. With it in place the sliding case closes to 0.15 %, and the contact
+damper that had been added to suppress the symptom turned out to make every other measurement
+slightly worse — it is still there, defaulted off, with a note saying why.
+
+### Mass scaling, and the one motion it does not touch
+
+Mass scaling trades honesty for wall clock: inflate every mass by `f`, every wave speed falls
+by `√f`, and the stable step grows by `√f`. Four hundred times the mass is twenty times the
+step. The usual objection is that it wrecks inertia, and it does — a body at a given speed
+carries `f` times the momentum, so every impact is wrong by that factor.
+
+What is easy to miss is that **the motion it is wanted for does not notice at all**. A block
+rotating about its corner under its own weight turns at
+
+```
+α = torque / inertia = m·g·d / (m·k²) = g·d / k²
+```
+
+and the mass cancels exactly. Every purely gravity-driven motion has that property, because
+the force and the inertia are the same mass. A toppling stack under 400× mass falls in exactly
+the time the unscaled one would, which is what makes `topple` a legitimate scene rather than a
+cartoon of one.
+
+What it does change, besides momentum, is the acoustic impedance `ρ·c`, which grows as `√f`.
+A block *landing* hits `√f` times harder than it should. That, not stability, is what sets the
+factor: 20× on a 200 mm steel stack keeps the landing stresses under yield, and 100× would
+not.
+
+The textbook version of this is *selective* — inflate only the elements whose own CFL step is
+below target, so the mesh's inertia is disturbed as little as possible. That matters on a mesh
+with a few small elements among many large ones, which is exactly what a fitted mesher makes
+and exactly what `Outline` refuses to make. **On a lattice, selective and uniform scaling are
+the same thing**, and the blocky mesher pays for itself a second time.
+
+### What the bracket showed
+
+The scene was built on the theory that a stiff foot under a soft, off-centre leg would tip on
+its own. Measured off the film, it does not: landing flat, the top of the leg turned **1.08°**
+over the whole event and the section's centroid moved sideways by 16 µm. It squats, spreads by
+17 %, and stays upright. The whole foot reaches the anvil in the same instant, so the reaction
+is distributed under the entire base and there is no moment arm — mass being off-centre is not
+a torque when every part of the contact is supported. Landing the same bracket on a corner at
+18° turns it **27.4°** and kicks it off the anvil.
+
+One element paid for that corner: 7.07 of plastic strain in the single cell that met the
+plane, against 695 others all under 1.0. Nothing inverted and the mesh stayed valid, but a
+contact carried by one cell is exactly the artefact that element deletion exists to resolve,
+and it moved separation up the list. It also forced a change in `Film`: an automatic colour
+ramp now spans the 99.5th percentile rather than the maximum and reports the true peak beside
+it, because a ramp stretched to one wild element painted the entire body at the cold end and
+said nothing had happened.
+
+The constitutive core does not care about any of this. Plasticity, hardening, rate and
+thermal terms, finite-strain kinematics, the defect field and the fracture-energy
+regularisation are all formulation-agnostic and survive intact. This is a rewrite of the
+harness around the engine, not of the engine.
+
+**"Close, not exact" is doing real work here.** It licenses three things the validation code
+deliberately refuses: deleting elements at full damage, which is how debris happens and which
+every commercial hydrocode does; mass scaling, which buys back timestep at the cost of
+slightly wrong inertia; and penalty contact, which the rigid anvil rejects on purity grounds
+and which is the right choice for deformable pairs anyway. The validation suite is what then
+says how much each of those cost.
+
 ## Next
 
-1. **Make the burst pressure converge.** The one open defect in M2. Crack-band regularisation
-   makes the fracture energy exact and mesh-independent, and it does that by making the
-   softening *modulus* a function of the element size — which is correct once the band has
-   localised into one element and wrong before it. The burst peak here arrives while damage is
-   still diffuse, so refinement buys back +0.22 % of strength per doubling with no plateau. The
-   two standard cures are a two-stage law — a softening modulus that is a genuine material
-   constant up to a detected localisation, crack-band only after it — or a nonlocal / gradient
-   damage model, which replaces the element-size length with a real material length and makes
-   the whole question go away. The second is the better answer and the larger job.
-2. **Triaxiality in the failure strain** (Johnson–Cook D1–D5). Right now *where* a part fails is
-   decided by the defect field alone. Real ductile failure strain falls roughly exponentially
-   with stress triaxiality, and a pressurised wall spans a wide range of it between bore and
-   outside surface — so the bore ought to be failing earlier than this model lets it, and the
-   competition between "weakest spot" and "most severely stressed spot" is missing entirely.
-3. **The 0.04 % nobody has accounted for in burst.** It is independent of wall thickness and
-   of loading rate — both checked — so it is neither the thin-wall assumption nor the harness.
-   The standing suspect is that the elastic response is *hypoelastic*, a rate form integrated
-   along the path, whose departure from an exact hyperelastic law is of order elastic strain ×
-   total strain: 0.002 × 0.1, which is the size observed. That is a hypothesis with the right
-   magnitude and the right invariances, not a measurement. Settling it means a hyperelastic
-   volumetric split, which is wanted anyway before anything is trusted past ~50 % strain.
-4. **The pressure–volume curve as an output, not just its peak.** The burst harness already
-   traces `P(ε_θ)` through the maximum and throws all of it away but one point. That curve *is*
-   the bulge-as-positive-feedback story the charter promises, and it is the first thing in this
-   project a person could be shown rather than told.
-5. **The GPU port**, which is the only thing still holding gate 2 open, and which now has a
-   target rather than an aspiration: 1.6–7.8× over ten CPU threads on a bandwidth-bound kernel.
+1. ~~**Plane strain, a polygon mesher, and per-element material.**~~ Done. `Outline` meshes
+   any polygon with holes, `Materials` paints one material per element, and `Impact` is the
+   first scene built on `PLANE_STRAIN`. What is still missing from the *mesher* rather than
+   the solver: pressure edges on a rasterised outline, and a way to name a boundary so a
+   constraint can be attached to it without counting node indices.
+2. ~~**Contact between deformable bodies.**~~ Done. `Contact` is penalty with a Coulomb cone,
+   momentum-exact, and characterised above. `Outline.assemble` makes bodies that touch rather
+   than weld, and `setGravity` makes them fall. What contact still lacks: it runs serial, and
+   it is node-to-segment rather than segment-to-segment, which is where the residual few per
+   cent of energy lives.
+3. ~~**Separation.**~~ Done. `setErosion` deletes elements softened to nothing; nodes and mass
+   stay, so momentum is untouched, and `erodedEnergy()` reports what left with the debris.
+   `QuadMesh.surface(skip)` rebuilds the free surface around the hole so contact sees the new
+   faces. What it cannot do is **shatter**: fragments need a brittle material, and the
+   crack-band limit `h ≤ 2·E·G_f/σ_f²` puts the largest regularisable element for an alumina
+   at a few microns against the millimetre a scene can afford. That is a real constraint, not
+   a missing feature, and it is why the demo wall is ductile.
+4. **Speed, and then interaction.** Mass scaling is done, the `topple` scene is what it
+   bought, and the contact search is threaded. What is left, in order of what it buys:
+   **thread the nodal update**, which any scene with a floor currently serialises because the
+   wall carries running totals a dynamic schedule would reorder — per-chunk accumulators
+   summed in chunk order would fix that; **segment-to-segment contact**, which is where the
+   residual few per cent of collision energy lives and which would scale better than the
+   node-to-segment search does; then the **GPU port**, which the structure-of-arrays layout
+   was chosen for. Placing, dragging and launching come after, because commit-and-watch is
+   what the numbers allow.
+5. ~~**Runs have to accumulate.**~~ Done. `RunLog` appends one line per run — what went in,
+   what came out — and `./gradlew history` reads it back. Parameters are the identity rather
+   than a hash, so `lastMatching` answers "have I already run this" and the file stays
+   readable. `impact`, `smash` and `topple` log themselves. What it is not yet: a way to
+   *diff* two runs, which is the thing you actually want when a number moves.
+
+Frozen, not abandoned — all three are below the accuracy bar the sandbox sets, and all three
+are written up above: the burst pressure not converging under refinement, triaxiality missing
+from the failure strain, and the unexplained 0.04 % in the burst deficit.
 
 Known gaps, deliberate: plane-stress plasticity is not implemented (enforcing σ_zz = 0 through
 a return map is a different algorithm, and nothing in the validation program needs it — the
-solver refuses the combination rather than silently solving plane strain). Contact is a rigid
-plane -- Coulomb friction is in, but the plan's penalty model for deformable-on-deformable
-pairs is not, and nothing before M5 needs it. Johnson–Cook **damage** (D1–D5) is not in — the
+solver refuses the combination rather than silently solving plane strain). Contact is
+node-to-segment rather than segment-to-segment, and serial, so the residual few per cent of
+energy across a collision stays where it is. Johnson–Cook **damage** (D1–D5) is not in — the
 failure strain comes from the defect field and carries no triaxiality dependence, which is item
 2 above. Plastic dissipation is integrated against reference element volumes, which is exact
 only because this return map is exactly isochoric — and `Damage` does not break that, because
@@ -1176,9 +1603,18 @@ traction-free, would break it.
 
 ## Build notes
 
-- Bytecode targets Java 21; any JDK ≥ 21 can build it.
-- On this machine the JDKs under `~/Library/Java` cannot be executed by non-interactive
-  processes (macOS privacy protection on `~/Library`). The system JDK at
-  `/Library/Java/JavaVirtualMachines/jdk-25.jdk` works:
-  `export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-25.jdk/Contents/Home`
-- `git` needs the Xcode licence accepted first: `sudo xcodebuild -license`.
+- Bytecode targets Java 21; any JDK ≥ 21 can build it. No dependencies outside JUnit.
+- On the Windows machine this currently builds on there is no standalone JDK installed. The
+  JetBrains Runtime shipped with IntelliJ is a JDK 25 and works:
+  `export JAVA_HOME="/c/Program Files/JetBrains/IntelliJ IDEA 2026.2.3/jbr"`
+- Run output goes to `runs/`, which is gitignored. Deliberately **not** `out/`: the IDE
+  configuration claims that as a compiler output root, and a directory something else empties
+  is not a place to keep traces. `-Dneofiz.runs=<dir>` moves it.
+- The viewer needs a server: `node viewer/serve.js` serves pages from `viewer/` and film data
+  from `runs/`. Opening the HTML as a `file://` URL will not work, because the film loads as a
+  script beside it.
+- Sweeps run one solver per thread and each solver single-threaded, which is the default.
+  Do not call `ExplicitSolver.setThreads` inside a swept case: the solver's workers spin
+  rather than sleeping between parallel regions, so eight solvers each asking for eight
+  workers puts sixty-four runnable threads on eight cores and most of the machine goes into
+  waiting for a barrier held by a thread that is not scheduled.

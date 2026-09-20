@@ -190,8 +190,13 @@ public final class DefectBurst {
 
     /** The closed-form burst pressure of the same tube with no defects anywhere, Pa. */
     public static double referencePressure() {
+        return referencePressure(SLENDERNESS);
+    }
+
+    /** The closed-form burst pressure of a defect-free tube of the given slenderness, Pa. */
+    public static double referencePressure(double slenderness) {
         return Burst.burstPressure(BurstCase.COPPER.johnsonCook(),
-                2.0 * MEAN_RADIUS / SLENDERNESS, MEAN_RADIUS);
+                2.0 * MEAN_RADIUS / slenderness, MEAN_RADIUS);
     }
 
     /**
@@ -204,7 +209,12 @@ public final class DefectBurst {
      * a weakest-link chain or as a bundle of parallel rings. See the class note.
      */
     public static double shearLagLength() {
-        return Math.sqrt(MEAN_RADIUS * 2.0 * MEAN_RADIUS / SLENDERNESS);
+        return shearLagLength(SLENDERNESS);
+    }
+
+    /** The shear-lag length of a tube of the given slenderness, metres. */
+    public static double shearLagLength(double slenderness) {
+        return Math.sqrt(MEAN_RADIUS * 2.0 * MEAN_RADIUS / slenderness);
     }
 
     /** Fires {@code shots} nominally identical tubes, seeded 1..shots, and pools the result. */
@@ -225,7 +235,7 @@ public final class DefectBurst {
 
         final double mean = mean(capacity);
         return new Population(setup, shots, mean, sd(capacity, mean),
-                mean / referencePressure(), sd(where, mean(where)),
+                mean / referencePressure(setup.slenderness()), sd(where, mean(where)),
                 bulge / shots, damaged / shots, notTraversed);
     }
 
@@ -252,49 +262,72 @@ public final class DefectBurst {
      * @param fractureEnergy  J/m^2
      * @param correlation     correlation length of the defect field, metres
      * @param length          modelled length of tube, metres
+     * @param slenderness     mean diameter over wall thickness; the wall is the only
+     *                        dimension a design map varies, and the mean radius is held at
+     *                        {@link #MEAN_RADIUS} because two free lengths would make the
+     *                        size effect and the thickness effect inseparable
      * @param throughWall     elements through the wall
      * @param alongAxis       elements along the axis
      */
     public record Setup(double failureScale, double fractureEnergy, double correlation,
-                        double length, int throughWall, int alongAxis) {
+                        double length, double slenderness, int throughWall, int alongAxis) {
 
         public static Setup nominal() {
             return new Setup(SCALE, FRACTURE_ENERGY, CORRELATION, TUBE_LENGTH,
-                    THROUGH_WALL, ALONG_AXIS);
+                    SLENDERNESS, THROUGH_WALL, ALONG_AXIS);
         }
 
         /** The same tube with no defects in it. */
         public Setup perfect() {
-            return new Setup(0.0, fractureEnergy, correlation, length, throughWall, alongAxis);
+            return new Setup(0.0, fractureEnergy, correlation, length, slenderness,
+                    throughWall, alongAxis);
         }
 
         public Setup withFailureScale(double s) {
-            return new Setup(s, fractureEnergy, correlation, length, throughWall, alongAxis);
+            return new Setup(s, fractureEnergy, correlation, length, slenderness,
+                    throughWall, alongAxis);
         }
 
         public Setup withFractureEnergy(double g) {
-            return new Setup(failureScale, g, correlation, length, throughWall, alongAxis);
+            return new Setup(failureScale, g, correlation, length, slenderness,
+                    throughWall, alongAxis);
         }
 
         public Setup withCorrelation(double c) {
-            return new Setup(failureScale, fractureEnergy, c, length, throughWall, alongAxis);
+            return new Setup(failureScale, fractureEnergy, c, length, slenderness,
+                    throughWall, alongAxis);
         }
 
         /** A different length of the same tube, meshed at the same element size. */
         public Setup withLength(double l) {
-            return new Setup(failureScale, fractureEnergy, correlation, l, throughWall,
-                    (int) Math.round(alongAxis * l / length));
+            return new Setup(failureScale, fractureEnergy, correlation, l, slenderness,
+                    throughWall, (int) Math.round(alongAxis * l / length));
+        }
+
+        /**
+         * A different wall thickness on the same mean radius, meshed with the same number of
+         * elements through the wall.
+         *
+         * <p>Holding the element <em>count</em> rather than the element <em>size</em> is the
+         * choice that keeps a thickness sweep comparable: the through-wall discretisation
+         * error is then the same at every point, so what moves between points is the physics
+         * and not the mesh. It does mean a thin wall costs more, because the radial element
+         * shrinks with the wall and the CFL timestep follows it.
+         */
+        public Setup withSlenderness(double s) {
+            return new Setup(failureScale, fractureEnergy, correlation, length, s,
+                    throughWall, alongAxis);
         }
 
         /** The same tube on a mesh refined by an integer factor in both directions. */
         public Setup refined(int factor) {
-            return new Setup(failureScale, fractureEnergy, correlation, length,
+            return new Setup(failureScale, fractureEnergy, correlation, length, slenderness,
                     throughWall * factor, alongAxis * factor);
         }
 
         /** The same tube refined along the axis only, which is where the band width lives. */
         public Setup refinedAxially(int factor) {
-            return new Setup(failureScale, fractureEnergy, correlation, length,
+            return new Setup(failureScale, fractureEnergy, correlation, length, slenderness,
                     throughWall, alongAxis * factor);
         }
 
@@ -302,14 +335,40 @@ public final class DefectBurst {
         public double bandWidth() {
             return length / alongAxis;
         }
+
+        /** Wall thickness, metres. */
+        public double thickness() {
+            return 2.0 * MEAN_RADIUS / slenderness;
+        }
+    }
+
+    /**
+     * Called at every sample of a run, for anything that wants to watch rather than wait.
+     *
+     * <p>A shot reports one pressure and one place, and a run that produced them took a few
+     * hundred thousand steps to do it. This is the hook that lets something -- a film, a
+     * trace, a live plot -- see the states in between without the physics having to know what
+     * is looking at it.
+     */
+    public interface Observer {
+
+        /** @param capacity the wall's current load capacity, Pa, as the run measures it */
+        void sample(ExplicitSolver solver, QuadMesh mesh, double capacity);
     }
 
     public static Shot fire(long seed) {
         return fire(seed, Setup.nominal());
     }
 
-    /** @param seed picks the realisation of the defect field, and nothing else */
     public static Shot fire(long seed, Setup setup) {
+        return fire(seed, setup, null);
+    }
+
+    /**
+     * @param seed     picks the realisation of the defect field, and nothing else
+     * @param observer watches every sample, or null
+     */
+    public static Shot fire(long seed, Setup setup, Observer observer) {
         final double scale = setup.failureScale();
         final double fractureEnergy = setup.fractureEnergy();
         final int nr = setup.throughWall();
@@ -319,7 +378,7 @@ public final class DefectBurst {
         final Material copper = BurstCase.COPPER;
         final JohnsonCook law = copper.johnsonCook();
 
-        final double thickness = 2.0 * MEAN_RADIUS / SLENDERNESS;
+        final double thickness = setup.thickness();
         final double inner = MEAN_RADIUS - 0.5 * thickness;
         final double outer = MEAN_RADIUS + 0.5 * thickness;
 
@@ -362,6 +421,7 @@ public final class DefectBurst {
         while (solver.time() < deadline) {
             solver.run(BurstCase.SAMPLE_STEPS);
             final double capacity = BurstCase.loadCapacity(solver, mesh);
+            if (observer != null) observer.sample(solver, mesh, capacity);
 
             if (capacity > peakCapacity) {
                 peakCapacity = capacity;
@@ -384,6 +444,12 @@ public final class DefectBurst {
         final double runOn = solver.time() + POST_PEAK_PERIODS * period;
         while (traversed && solver.time() < runOn && solver.maxDamage() < 1.0) {
             solver.run(BurstCase.SAMPLE_STEPS);
+            // Watched as well, and this is the half worth watching: everything before the
+            // peak is a tube swelling evenly, and everything that makes it a failure rather
+            // than a bulge happens here.
+            if (observer != null) {
+                observer.sample(solver, mesh, BurstCase.loadCapacity(solver, mesh));
+            }
         }
         final double wallClock = (System.nanoTime() - t0) * 1e-9;
 

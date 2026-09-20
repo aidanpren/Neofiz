@@ -2,6 +2,7 @@ package org.neofiz.solver;
 
 import org.neofiz.core.Formulation;
 import org.neofiz.core.Material;
+import org.neofiz.core.Materials;
 import org.neofiz.mesh.QuadMesh;
 
 import java.util.Arrays;
@@ -58,19 +59,36 @@ public final class ExplicitSolver {
     private static final double DEFAULT_HOURGLASS_COEFFICIENT = 0.05;
 
     private final QuadMesh mesh;
-    private final Material material;
+    private final Materials materials;
     private final Formulation formulation;
     private final Integration integration;
     private final Kinematics kinematics;
     /** Out-of-plane thickness for planar formulations, metres. Unused when axisymmetric. */
     private final double thickness;
 
-    private final double lambda;
-    private final double mu;
-    private final double bulkModulus;
+    /**
+     * Elastic constants and flow law, one entry per element.
+     *
+     * <p>Unrolled out of {@link Materials} at construction rather than read through it in the
+     * kernel, because the inner loop wants a double out of an array and not a record
+     * dereference behind a branch. A uniform mesh fills every entry with the same number, so
+     * the arithmetic is unchanged and the cost is three doubles and a reference per element.
+     */
+    private final double[] lambdaOf;
+    private final double[] muOf;
+    private final double[] bulkOf;
+    private final double[] densityOf;
+    private final J2.Flow[] flowOf;
 
-    /** The flow stress law and its constants, built once. Uniform across the mesh. */
-    private final J2.Flow flow;
+    /** The fastest dilatational wave on the mesh, m/s. What the CFL step is sized against. */
+    private final double fastestWave;
+
+    /**
+     * The timestep in the reference configuration. Fixed, unlike {@link #dt}, which falls as
+     * elements compress -- and a penalty stiffness has to be built from something that does
+     * not move while a contact is loaded, or it manufactures energy. See {@link Contact}.
+     */
+    private double dt0;
 
     /**
      * Per-point failure strain and softening state, or null for a material that cannot fail.
@@ -190,6 +208,31 @@ public final class ExplicitSolver {
     /** Rigid frictionless anvil, or null for an unconstrained body. */
     private RigidWall wall;
 
+    /** Penalty contact between deformable surfaces, or null if nothing may touch. */
+    private Contact contact;
+
+    /** The threaded half of the contact pass; see Contact for why only half. */
+    private final Parallel.Kernel contactKernel = (from, to, worker) -> contact.search(from, to);
+
+    /** Uniform body acceleration, m/s^2. Zero unless a scene asks for it. */
+    private double gravityR;
+    private double gravityZ;
+
+    /**
+     * Which elements have been deleted, or null when erosion is off.
+     *
+     * <p>Null rather than an all-false array so that the check in the hot loop is a reference
+     * test against a field that is almost always null, and every validation gate in this
+     * project -- none of which erodes -- runs the same arithmetic it always did.
+     */
+    private boolean[] gone;
+    /** How much heavier the mesh has been made; see setMassScaling. */
+    private double massScale = 1.0;
+    private double erosionDamage = Double.POSITIVE_INFINITY;
+    private int erodedCount;
+    private double erodedEnergy;
+    private int invertedCount;
+
     /** Full 2x2 integration, small strain. */
     public ExplicitSolver(QuadMesh mesh, Material material, Formulation formulation,
                           double thickness, double cflSafety) {
@@ -206,26 +249,55 @@ public final class ExplicitSolver {
     public ExplicitSolver(QuadMesh mesh, Material material, Formulation formulation,
                           Integration integration, Kinematics kinematics,
                           double thickness, double cflSafety) {
-        if (formulation == Formulation.PLANE_STRESS && !material.isElastic()) {
-            // Enforcing sigma_zz = 0 through a return map is a different algorithm, not a
-            // special case of this one. Refusing is better than silently solving plane
-            // strain and labelling it plane stress.
-            throw new IllegalArgumentException(
-                    "plane stress plasticity needs its own return map; not implemented");
+        this(mesh, Materials.uniform(material), formulation, integration, kinematics,
+                thickness, cflSafety);
+    }
+
+    /**
+     * The general form: a mesh whose elements need not be made of the same thing.
+     *
+     * <p>Everything downstream of here is already per element -- stress, plastic strain, back
+     * stress and damage all live per integration point -- so a second substance costs the
+     * kernel one array index and nothing else. What it buys is the whole point of a sandbox:
+     * a steel bar dropped on a concrete slab is one solve, not two coupled ones.
+     */
+    public ExplicitSolver(QuadMesh mesh, Materials materials, Formulation formulation,
+                          Integration integration, Kinematics kinematics,
+                          double thickness, double cflSafety) {
+        materials.requireCovers(mesh.elementCount);
+        for (Material m : materials.distinct()) {
+            if (formulation == Formulation.PLANE_STRESS && !m.isElastic()) {
+                // Enforcing sigma_zz = 0 through a return map is a different algorithm, not a
+                // special case of this one. Refusing is better than silently solving plane
+                // strain and labelling it plane stress.
+                throw new IllegalArgumentException(
+                        "plane stress plasticity needs its own return map; not implemented");
+            }
         }
         this.mesh = mesh;
-        this.material = material;
+        this.materials = materials;
         this.formulation = formulation;
         this.integration = integration;
         this.kinematics = kinematics;
         this.thickness = thickness;
         this.cflSafety = cflSafety;
-        this.lambda = formulation == Formulation.PLANE_STRESS
-                ? 2.0 * material.lambda() * material.mu() / (material.lambda() + 2.0 * material.mu())
-                : material.lambda();
-        this.mu = material.mu();
-        this.bulkModulus = this.lambda + 2.0 * this.mu / 3.0;
-        this.flow = J2.Flow.of(material);
+        this.lambdaOf = new double[mesh.elementCount];
+        this.muOf = new double[mesh.elementCount];
+        this.bulkOf = new double[mesh.elementCount];
+        this.densityOf = new double[mesh.elementCount];
+        this.flowOf = new J2.Flow[mesh.elementCount];
+        for (int e = 0; e < mesh.elementCount; e++) {
+            final Material m = materials.at(e);
+            final double lam = formulation == Formulation.PLANE_STRESS
+                    ? 2.0 * m.lambda() * m.mu() / (m.lambda() + 2.0 * m.mu())
+                    : m.lambda();
+            lambdaOf[e] = lam;
+            muOf[e] = m.mu();
+            bulkOf[e] = lam + 2.0 * m.mu() / 3.0;
+            densityOf[e] = m.density();
+            flowOf[e] = J2.Flow.of(m);
+        }
+        this.fastestWave = materials.fastestWave();
 
         int n = mesh.nodeCount;
         this.ur = new double[n];
@@ -261,7 +333,8 @@ public final class ExplicitSolver {
         // CFL: a dilatational wave must not cross the shortest element edge in one step.
         double edge = mesh.minimumEdgeLength();
         this.minEdgeSquared = edge * edge;
-        this.dt = cflSafety * edge / material.dilatationalWaveSpeed();
+        this.dt = cflSafety * edge / fastestWave;
+        this.dt0 = this.dt;
         this.dtPrevious = this.dt;
     }
 
@@ -404,6 +477,220 @@ public final class ExplicitSolver {
     }
 
     /**
+     * Lets the body touch itself and anything else in the same mesh. See {@link Contact}.
+     *
+     * <p>Independent of {@link #setRigidWall}: an anvil is a boundary condition and this is a
+     * pair of surfaces, and a scene may have both. Null switches it off, and off is the
+     * default, because a mesh with no second body in it pays nothing for a surface it will
+     * never touch.
+     */
+    public void setContact(Contact contact) {
+        this.contact = contact;
+    }
+
+    /** The contact model, or null if none was set. */
+    public Contact contact() {
+        return contact;
+    }
+
+    /**
+     * A uniform body acceleration, m/s^2. Earth is {@code setGravity(0, -9.81)}.
+     *
+     * <p>Off by default, and that is not an oversight: every validation case in this project
+     * runs at stresses where a g is nothing. A tube bursting at 20 MPa is carrying six orders
+     * of magnitude more than its own weight, and switching gravity on would change the answer
+     * in the eighth decimal place while making every gate depend on the direction the model
+     * happens to be drawn in. It matters for a sandbox, where things are supposed to fall,
+     * and nowhere else here.
+     *
+     * <p>Applied to the lumped nodal mass, so it is exact for the rigid-body part of the
+     * motion and consistent with whatever quadrature the mass came from.
+     */
+    public void setGravity(double accelerationR, double accelerationZ) {
+        this.gravityR = accelerationR;
+        this.gravityZ = accelerationZ;
+    }
+
+    /**
+     * Lets fully softened elements be removed, so that a body can come apart.
+     *
+     * <h2>What is thrown away and what is not</h2>
+     *
+     * A deleted element stops contributing internal force and stops constraining the timestep.
+     * Its <b>nodes and their mass stay</b>, which is what makes this conservative rather than
+     * merely convenient: an element's internal forces sum to zero, so removing them cannot
+     * move the total momentum, and keeping the mass means none of it vanishes. A node left
+     * with no live element becomes a free particle carrying whatever momentum it had, which is
+     * physically what a fragment too small to mesh is.
+     *
+     * <p>What <em>is</em> thrown away is the elastic energy the element still held. That is
+     * reported by {@link #erodedEnergy()} rather than quietly dropped, because it is the one
+     * term that stops an energy audit closing across a deletion, and a run that erodes a lot
+     * should be able to say how much it lost.
+     *
+     * <h2>Why this is not a physical model</h2>
+     *
+     * Nothing in continuum mechanics says a piece of material ceases to exist. Deletion is a
+     * numerical device for getting rid of elements that can no longer be integrated -- they
+     * carry no stress, their shape functions are meaningless, and they hold the timestep down
+     * for nothing. The <em>physics</em> of separation is the softening that got them there,
+     * which is regularised by fracture energy and is the same at any mesh size; deletion is
+     * only the disposal. That distinction is what keeps the charter's ban on binary failure
+     * intact: an element does not switch off, it softens to nothing and is then swept up.
+     *
+     * <p>It still costs accuracy, and honestly: the deleted volume is gone, so a body that
+     * erodes loses section, and a crack opened this way is exactly one element wide however
+     * fine the mesh. This is the trade the sandbox licenses and the validation programme does
+     * not.
+     *
+     * @param damageThreshold element damage at which to delete, 0 to 1; 1.0 is "completely
+     *                        softened", which is the only value with a physical reading
+     */
+    public void setErosion(double damageThreshold) {
+        if (damage == null) {
+            throw new IllegalStateException(
+                    "erosion needs a failure model; call setDamage first");
+        }
+        if (!(damageThreshold > 0.0) || damageThreshold > 1.0) {
+            throw new IllegalArgumentException(
+                    "the erosion threshold is a damage, so it lies in (0, 1]; was "
+                            + damageThreshold);
+        }
+        this.erosionDamage = damageThreshold;
+        if (gone == null) gone = new boolean[mesh.elementCount];
+    }
+
+    /**
+     * Inflates the mass of the whole mesh so the stable step reaches a target, m/s^2 of
+     * honesty traded for wall-clock time.
+     *
+     * <h2>Why a scene needs it</h2>
+     *
+     * Gravity works in milliseconds and an explicit solve works in microseconds. A block
+     * falling one millimetre takes 14 ms, which at the CFL step of a 1 mm copper mesh is a
+     * hundred and sixty thousand steps -- to watch something drop the height of its own
+     * skin. Every scene in this project that involves gravity has had to begin already
+     * stacked, because settling was unaffordable. That is the constraint this lifts.
+     *
+     * <h2>Why the simple form is the right one here</h2>
+     *
+     * Textbook mass scaling is <em>selective</em>: find the elements whose own CFL step is
+     * below the target and inflate only those, so the mesh's inertia is disturbed as little as
+     * possible. That matters on a mesh with a few small elements among many large ones -- which
+     * is what a fitted mesher produces and is exactly what {@link org.neofiz.mesh.Outline}
+     * refuses to make. On a lattice every element is the same size and the same material can
+     * be given the same factor, so selective scaling and uniform scaling are <b>the same
+     * thing</b>. The mesher's blockiness pays for itself twice.
+     *
+     * <p>Uniformity is also what makes this cheap. Scaling every mass by {@code f} divides
+     * every wave speed by {@code sqrt(f)} and multiplies the stable step by {@code sqrt(f)},
+     * so the CFL rule needs no per-element wave speed and the hot loop is untouched.
+     *
+     * <h2>What it costs</h2>
+     *
+     * Momentum. A body with {@code f} times its mass carries {@code f} times the momentum at
+     * the same speed, so anything whose answer depends on inertia -- an impact, a ricochet, a
+     * momentum transfer -- is wrong by that factor. Gravity is not: weight scales with mass,
+     * so a scaled body still falls at g and still rests at the same load. Use it for settling,
+     * stacking and toppling; do not use it for the moment something arrives at speed.
+     * {@link #massScale()} reports the factor so a run can say what it bought.
+     *
+     * @param targetStep the timestep wanted, seconds. A target below the current step is
+     *                   refused rather than silently ignored: mass is never removed.
+     */
+    public void setMassScaling(double targetStep) {
+        if (!(targetStep > 0.0)) {
+            throw new IllegalArgumentException("the target step must be positive");
+        }
+        if (targetStep < dt) {
+            throw new IllegalArgumentException(
+                    "the step is already " + dt + " s, longer than the target " + targetStep
+                            + "; mass scaling adds mass and cannot shorten a step");
+        }
+        final double factor = (targetStep / dt) * (targetStep / dt);
+        for (int i = 0; i < mass.length; i++) mass[i] *= factor;
+        massScale *= factor;
+        dt = targetStep;
+        dtPrevious = dt;
+        // The reference step is what the contact stiffness is built from, so it has to move
+        // with the real one. Leaving it behind would make the penalty frequency sqrt(f) times
+        // what the step can integrate, which for a hundredfold scaling is a divergent run.
+        dt0 = dt;
+    }
+
+    /** How much heavier the mesh has been made, 1 when nothing was scaled. */
+    public double massScale() {
+        return massScale;
+    }
+
+    /** Whether an element has been deleted. False everywhere when erosion is off. */
+    public boolean isEroded(int element) {
+        return gone != null && gone[element];
+    }
+
+    /** How many elements have been deleted over the run. */
+    public int erodedElements() {
+        return erodedCount;
+    }
+
+    /** Elastic energy discarded with deleted elements, joules. The audit's missing term. */
+    public double erodedEnergy() {
+        return erodedEnergy;
+    }
+
+    /**
+     * Elements deleted for having turned inside out rather than for having failed.
+     *
+     * <p>Separate from the damage count because it means something different. An inverted
+     * element is a solve that has gone wrong -- the step was too long, or the material was
+     * driven somewhere it cannot go -- and deleting it keeps the run alive but does not make
+     * the answer right. A handful at the end of a violent scene is ordinary; a lot of them
+     * early is a result to distrust.
+     */
+    public int invertedElements() {
+        return invertedCount;
+    }
+
+    /**
+     * Deletes whatever has failed or inverted since the last step.
+     *
+     * <p>Runs once per step and only when erosion is on. Two criteria: damage past the
+     * threshold, which is failure, and a non-positive current area, which is not a failure but
+     * an element that can no longer be integrated at all -- its Jacobian has changed sign, so
+     * the volume it reports is negative and every force it assembles has the wrong sign.
+     * Keeping one of those is worse than losing it.
+     */
+    private void erode() {
+        for (int e = 0; e < mesh.elementCount; e++) {
+            if (gone[e]) continue;
+            final boolean failed = damage != null && elementDamage(e) >= erosionDamage;
+            final boolean inverted = currentArea(e) <= 0.0;
+            if (!failed && !inverted) continue;
+
+            gone[e] = true;
+            erodedCount++;
+            if (inverted && !failed) invertedCount++;
+            for (int g = 0; g < pointsPerElement; g++) {
+                erodedEnergy += pointStrainEnergy(e, g);
+            }
+            if (contact != null) contact.forget(e);
+        }
+    }
+
+    /** Signed area of an element as it is now, square metres. Negative means inside out. */
+    private double currentArea(int element) {
+        final int b = element * 4;
+        double a = 0.0;
+        for (int k = 0; k < 4; k++) {
+            final int i = mesh.conn[b + k];
+            final int j = mesh.conn[b + (k + 1) % 4];
+            a += (mesh.r[i] + ur[i]) * (mesh.z[j] + uz[j])
+                    - (mesh.r[j] + ur[j]) * (mesh.z[i] + uz[i]);
+        }
+        return 0.5 * a;
+    }
+
+    /**
      * Gives every element a failure strain and lets it soften past it. See {@link Damage}.
      *
      * <p>The geometry handed over is the <b>reference</b> one, not the current one. By the time
@@ -424,6 +711,27 @@ public final class ExplicitSolver {
      *                       sub-element variation is not something it resolves.
      */
     public void setDamage(double fractureEnergy, double[] failureStrain) {
+        final double[] gf = new double[mesh.elementCount];
+        java.util.Arrays.fill(gf, fractureEnergy);
+        setDamage(gf, failureStrain);
+    }
+
+    /**
+     * The per-element form, for a mesh holding more than one substance.
+     *
+     * <p>G_f is the property that separates materials most sharply -- a window pane and a
+     * pressure-vessel steel are four orders of magnitude apart -- so a mixed mesh with one
+     * fracture energy on it is not a mixed mesh in the way that matters.
+     *
+     * @param fractureEnergy energy per unit crack area, J/m^2, one per element
+     * @param failureStrain  plastic strain at onset, one per element
+     */
+    public void setDamage(double[] fractureEnergy, double[] failureStrain) {
+        if (fractureEnergy.length != mesh.elementCount) {
+            throw new IllegalArgumentException(
+                    "fracture energy has " + fractureEnergy.length + " entries for a mesh of "
+                            + mesh.elementCount + " elements");
+        }
         if (failureStrain.length != mesh.elementCount) {
             throw new IllegalArgumentException(
                     "failure strain has " + failureStrain.length + " entries for a mesh of "
@@ -432,13 +740,18 @@ public final class ExplicitSolver {
         // The return map divides by 2 mu + (2/3)(H_soft + H_kin) and Damage clamps H_soft at
         // -E, so this is the worst denominator the solve can ever see. It is positive for every
         // nu < 0.5, which Material already enforces -- so this cannot fire, and it is here to
-        // say out loud which two constraints are holding each other up.
-        final double worst = 2.0 * mu + (2.0 / 3.0)
-                * (material.kinematicHardening() - material.youngsModulus());
-        if (!(worst > 0.0)) {
-            throw new IllegalArgumentException(
-                    "a fully clamped softening modulus would make the return map singular: "
-                            + "2mu + (2/3)(H_kin - E) = " + worst + " <= 0");
+        // say out loud which two constraints are holding each other up. Checked per material,
+        // because on a mixed mesh it is the softest one that would fail first and the mesh
+        // average would hide it.
+        for (Material m : materials.distinct()) {
+            final double worst = 2.0 * m.mu() + (2.0 / 3.0)
+                    * (m.kinematicHardening() - m.youngsModulus());
+            if (!(worst > 0.0)) {
+                throw new IllegalArgumentException(
+                        "a fully clamped softening modulus would make the return map singular "
+                                + "for " + m.name() + ": 2mu + (2/3)(H_kin - E) = " + worst
+                                + " <= 0");
+            }
         }
 
         // Every point of an element is handed that element's whole geometry, so all of them
@@ -448,6 +761,8 @@ public final class ExplicitSolver {
         // either quadrature rule.
         final int points = mesh.elementCount * pointsPerElement;
         final double[] perPoint = new double[points];
+        final double[] gfOf = new double[points];
+        final double[] eOf = new double[points];
         final double[] geometry = new double[Damage.GEOMETRY_STRIDE * points];
         for (int e = 0; e < mesh.elementCount; e++) {
             final int b = e * 4;
@@ -462,6 +777,8 @@ public final class ExplicitSolver {
             for (int g = 0; g < pointsPerElement; g++) {
                 final int p = e * pointsPerElement + g;
                 perPoint[p] = failureStrain[e];
+                gfOf[p] = fractureEnergy[e];
+                eOf[p] = materials.at(e).youngsModulus();
                 final int q = Damage.GEOMETRY_STRIDE * p;
                 geometry[q] = area;
                 geometry[q + 1] = uR;
@@ -470,7 +787,7 @@ public final class ExplicitSolver {
                 geometry[q + 4] = vZ;
             }
         }
-        this.damage = new Damage(fractureEnergy, material.youngsModulus(), perPoint, geometry);
+        this.damage = new Damage(gfOf, eOf, perPoint, geometry);
     }
 
     /** The damage state, or null if none was set. */
@@ -528,6 +845,70 @@ public final class ExplicitSolver {
 
     public double[] axialDisplacement() {
         return uz;
+    }
+
+    /**
+     * Kinetic energy with the velocity brought forward to the same instant as the
+     * displacement, joules.
+     *
+     * <p>{@link #kineticEnergy()} is half a step ahead of everything it is ever compared
+     * against. Central difference carries velocity at {@code t + dt/2} and displacement at
+     * {@code t + dt}, so an audit that adds kinetic to stored energy is adding two numbers
+     * from two different instants, and the mismatch is
+     *
+     * <pre>  KE(t + dt/2) - KE(t + dt) ~ -(dt/2) * d(KE)/dt</pre>
+     *
+     * which is <b>first order</b> in the step, not second. On a body in rigid translation it
+     * is nothing, because the kinetic energy is not changing. On a vibrating body it is a
+     * swing of about {@code omega*dt/2} of the vibrational energy -- 1.4 % on a bar meshed at
+     * the usual CFL safety factor, with no error anywhere in the solve. That is large enough
+     * to be mistaken for a defect in whatever was added last, and was: a collision turns
+     * translation into vibration, so the total-energy audit steps up as the bodies meet and
+     * the contact model looks like the source.
+     *
+     * <p>The correction is exact and free. The velocity half a step further on is
+     * {@code v + dt*f/m} with the force already assembled at the current displacement, so the
+     * centred velocity is {@code v + (dt/2)*f/m} and no extra state is needed. Constrained
+     * components are left alone: a pinned node has no velocity to centre, and a node the wall
+     * is holding carries a force the wall cancels rather than one that will accelerate it.
+     */
+    public double centredKineticEnergy() {
+        double ke = 0.0;
+        final double h = 0.5 * dt;
+        for (int i = 0; i < mesh.nodeCount; i++) {
+            final double invM = 1.0 / mass[i];
+            final boolean held = wall != null && onWall[i] && wall.holds(fz[i]);
+            final double cvr = fixedR[i] ? vr[i] : vr[i] + h * fr[i] * invM;
+            final double cvz = fixedZ[i] || held ? vz[i] : vz[i] + h * fz[i] * invM;
+            ke += 0.5 * mass[i] * (cvr * cvr + cvz * cvz);
+        }
+        return ke;
+    }
+
+    /**
+     * Mean speed of an element's four corners, m/s.
+     *
+     * <p>The field that makes a scene of several bodies legible. Stress and plastic strain say
+     * what a body is going through; speed says which piece is going where, which is the
+     * question a picture of a collapse is actually being asked.
+     */
+    public double elementSpeed(int element) {
+        double sum = 0.0;
+        for (int k = 0; k < 4; k++) {
+            final int n = mesh.conn[element * 4 + k];
+            sum += Math.sqrt(vr[n] * vr[n] + vz[n] * vz[n]);
+        }
+        return 0.25 * sum;
+    }
+
+    /** Nodal velocity, radial component. Live, not a copy. */
+    public double[] velocityR() {
+        return vr;
+    }
+
+    /** Nodal velocity, axial component. Live, not a copy. */
+    public double[] velocityZ() {
+        return vz;
     }
 
     /** Net nodal force from the last assembly, radial component. */
@@ -592,6 +973,10 @@ public final class ExplicitSolver {
         time += dt;
         stepCount++;
 
+        // Before the assembly, so a deleted element never contributes again -- and after the
+        // nodal update, so the geometry the inversion test reads is the one the step produced.
+        if (gone != null) erode();
+
         advanceMaterialAndAssemble(dt);
 
         // Elements that have compressed carry a shorter wave transit, so the stable step
@@ -599,7 +984,9 @@ public final class ExplicitSolver {
         // goes unstable late, long after the setup that looked fine.
         if (kinematics.isFinite()) {
             dtPrevious = dt;
-            dt = cflSafety * Math.sqrt(minEdgeSquared) / material.dilatationalWaveSpeed();
+            // sqrt(massScale) because inflating every mass by f divides every wave speed by
+            // sqrt(f). One factor here is the whole of mass scaling in the hot path.
+            dt = cflSafety * Math.sqrt(minEdgeSquared * massScale) / fastestWave;
         }
     }
 
@@ -705,6 +1092,22 @@ public final class ExplicitSolver {
             pool.run(mesh.nodeCount, gatherKernel);
         }
 
+        // After the gather, because contact adds to the summed nodal force rather than
+        // contributing a slot to it: its pairs are discovered per step, so there is no fixed
+        // source list for the gather to index. Before the step that integrates them, so the
+        // penalty acts over the same interval the material does.
+        if (contact != null) {
+            // The search is threaded and the accumulation is not; see Contact. It is the most
+            // expensive thing in a scene with several bodies in it -- two and a half times
+            // the element kernel on the benchmark -- and almost all of that is the search.
+            final int slaves = contact.begin(ur, uz, dt, dt0);
+            if (slaves > 0) {
+                if (pool != null) pool.run(slaves, contactKernel);
+                else contact.search(0, slaves);
+                contact.accumulate(vr, vz, mass, fr, fz);
+            }
+        }
+
         minEdgeSquared = Double.MAX_VALUE;
         for (int w = 0; w < minEdgeLocal.length; w += PAD) {
             minEdgeSquared = Math.min(minEdgeSquared, minEdgeLocal[w]);
@@ -752,8 +1155,12 @@ public final class ExplicitSolver {
                 sr += c[slot];
                 sz += c[slot + 4];
             }
-            fr[n] = sr;
-            fz[n] = sz;
+            // Gravity is added here rather than contributed as a source, because it is the
+            // one force that belongs to a node rather than to anything the node is part of.
+            // Adding it after the gather also keeps it out of the parallel assembly, where it
+            // would have needed a slot of its own for no benefit.
+            fr[n] = sr + mass[n] * gravityR;
+            fz[n] = sz + mass[n] * gravityZ;
         }
     }
 
@@ -815,12 +1222,22 @@ public final class ExplicitSolver {
         final boolean axi = formulation.isAxisymmetric();
         final boolean finite = kinematics.isFinite();
         final double mid = -0.5 * strainDt;   // step back to the mid-step configuration
-        final J2.Flow fl = flow;
         final Damage dmg = damage;
         double minEdge = Double.MAX_VALUE;
 
         for (int e = from; e < to; e++) {
             final int b = e * 4;
+            // A deleted element contributes nothing, and has to write that nothing rather
+            // than skip: the gather sums fixed slots, so a stale force left in one would go
+            // on pushing its nodes for the rest of the run. It also stops being counted in
+            // the shortest-edge search, which is most of the point -- an element crushed to
+            // nothing would otherwise hold the whole scene to its timestep.
+            if (gone != null && gone[e]) {
+                for (int k = 0; k < 8; k++) ef[b * 2 + k] = 0.0;
+                continue;
+            }
+            final J2.Flow fl = flowOf[e];
+            final double lambda = lambdaOf[e], mu = muOf[e];
             final int n0 = conn[b], n1 = conn[b + 1], n2 = conn[b + 2], n3 = conn[b + 3];
 
             final double r0 = cr(n0, mid), r1 = cr(n1, mid), r2 = cr(n2, mid), r3 = cr(n3, mid);
@@ -960,12 +1377,20 @@ public final class ExplicitSolver {
         final boolean finite = kinematics.isFinite();
         final double mid = -0.5 * strainDt;   // step back to the mid-step configuration
         final double qhg = hourglassCoefficient;
-        final J2.Flow fl = flow;
         final Damage dmg = damage;
         double minEdge = Double.MAX_VALUE;
 
         for (int e = from; e < to; e++) {
             final int b = e * 4;
+            // A deleted element contributes nothing, and has to write that nothing rather
+            // than skip: the gather sums fixed slots, so a stale force left in one would go
+            // on pushing its nodes for the rest of the run.
+            if (gone != null && gone[e]) {
+                for (int k = 0; k < 8; k++) ef[b * 2 + k] = 0.0;
+                continue;
+            }
+            final J2.Flow fl = flowOf[e];
+            final double lambda = lambdaOf[e], mu = muOf[e];
             final int n0 = conn[b], n1 = conn[b + 1], n2 = conn[b + 2], n3 = conn[b + 3];
 
             final double r0 = cr(n0, mid), r1 = cr(n1, mid), r2 = cr(n2, mid), r3 = cr(n3, mid);
@@ -1136,9 +1561,9 @@ public final class ExplicitSolver {
         final double[] mr = mesh.r;
         final double[] mz = mesh.z;
         final boolean axi = formulation.isAxisymmetric();
-        final double rho = material.density();
 
         for (int e = 0; e < mesh.elementCount; e++) {
+            final double rho = densityOf[e];
             final int b = e * 4;
             final int n0 = conn[b], n1 = conn[b + 1], n2 = conn[b + 2], n3 = conn[b + 3];
             final double r0 = mr[n0], r1 = mr[n1], r2 = mr[n2], r3 = mr[n3];
@@ -1188,6 +1613,23 @@ public final class ExplicitSolver {
         return p;
     }
 
+    /**
+     * Total radial momentum, kg m/s.
+     *
+     * <p>Only a conserved quantity under {@link Formulation#PLANE_STRAIN} and
+     * {@link Formulation#PLANE_STRESS}, where {@code r} is an ordinary Cartesian direction. An
+     * axisymmetric body has no net radial momentum to conserve -- every ring's motion cancels
+     * around the circumference, and the hoop term in the internal force is a real source in
+     * this sum rather than a bookkeeping artefact. It is the audit {@link Contact} is checked
+     * against, because a penalty pair puts equal and opposite forces on the two surfaces and
+     * so cannot move it at all.
+     */
+    public double radialMomentum() {
+        double p = 0.0;
+        for (int i = 0; i < mesh.nodeCount; i++) p += mass[i] * vr[i];
+        return p;
+    }
+
     /** Total kinetic energy, joules. */
     public double kineticEnergy() {
         double ke = 0.0;
@@ -1212,18 +1654,24 @@ public final class ExplicitSolver {
     public double strainEnergy() {
         double se = 0.0;
         for (int e = 0; e < mesh.elementCount; e++) {
+            if (gone != null && gone[e]) continue;
             for (int g = 0; g < pointsPerElement; g++) {
-                final int p = e * pointsPerElement + g;
-                final int s = J2.COMPONENTS * p;
-                final double press = (sig[s] + sig[s + 1] + sig[s + 2]) / 3.0;
-                final double a = sig[s] - press, bb = sig[s + 1] - press, c = sig[s + 2] - press;
-                final double d = sig[s + 3];
-                final double density = (a * a + bb * bb + c * c + 2.0 * d * d) / (4.0 * mu)
-                        + press * press / (2.0 * bulkModulus);
-                se += density * gaussVolume(e, g);
+                se += pointStrainEnergy(e, g);
             }
         }
         return se;
+    }
+
+    /** Recoverable energy stored at one integration point, joules. */
+    private double pointStrainEnergy(int e, int g) {
+        final int p = e * pointsPerElement + g;
+        final int s = J2.COMPONENTS * p;
+        final double press = (sig[s] + sig[s + 1] + sig[s + 2]) / 3.0;
+        final double a = sig[s] - press, bb = sig[s + 1] - press, c = sig[s + 2] - press;
+        final double d = sig[s + 3];
+        final double density = (a * a + bb * bb + c * c + 2.0 * d * d) / (4.0 * muOf[e])
+                + press * press / (2.0 * bulkOf[e]);
+        return density * gaussVolume(e, g);
     }
 
     /**
@@ -1307,6 +1755,23 @@ public final class ExplicitSolver {
     }
 
     /**
+     * Damage at an element, averaged over its Gauss points, 0 to 1. Zero if nothing can fail.
+     *
+     * <p>The per-element companion to {@link #maxDamage()}, which exists so that damage can
+     * be drawn rather than only summarised. Averaging matches {@link #elementPlasticStrain},
+     * and under reduced integration there is only one point to average.
+     */
+    public double elementDamage(int element) {
+        if (damage == null) return 0.0;
+        double sum = 0.0;
+        for (int g = 0; g < pointsPerElement; g++) {
+            final int p = element * pointsPerElement + g;
+            sum += damage.at(p, epsP[p]);
+        }
+        return sum / pointsPerElement;
+    }
+
+    /**
      * Element whose damage is highest, or -1 if nothing has softened. What the burst harness
      * reads to say <em>where</em> a tube failed, as distinct from at what pressure.
      */
@@ -1365,6 +1830,7 @@ public final class ExplicitSolver {
      *                               specimen that never heated up
      */
     public double temperature(int point) {
+        final Material material = materials.at(point / pointsPerElement);
         if (material.johnsonCook() == null) {
             throw new IllegalStateException(
                     "this material has no thermal model; temperature is not defined");
@@ -1439,6 +1905,28 @@ public final class ExplicitSolver {
         final int b = element * 4;
         return 0.25 * (mesh.r[mesh.conn[b]] + mesh.r[mesh.conn[b + 1]]
                 + mesh.r[mesh.conn[b + 2]] + mesh.r[mesh.conn[b + 3]]);
+    }
+
+    /**
+     * Axial position of an element centroid, in the <b>current</b> configuration.
+     *
+     * <p>Deliberately not the reference one, unlike {@link #centroidRadius}. A scene of bodies
+     * that move wants to know where a piece is now, and colouring a film by where a piece
+     * started produces a picture that never changes.
+     */
+    public double centroidZ(int element) {
+        final int b = element * 4;
+        double sum = 0.0;
+        for (int k = 0; k < 4; k++) {
+            final int n = mesh.conn[b + k];
+            sum += mesh.z[n] + uz[n];
+        }
+        return 0.25 * sum;
+    }
+
+    /** Reference axial position of a node, metres. For a caller measuring displacement. */
+    public double meshZ(int node) {
+        return mesh.z[node];
     }
 
     private double outerRadius(int element) {

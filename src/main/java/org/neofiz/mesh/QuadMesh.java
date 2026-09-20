@@ -140,6 +140,95 @@ public final class QuadMesh {
         return v;
     }
 
+    /**
+     * The free surface: every edge that belongs to exactly one element.
+     *
+     * @param edges 2 node indices per edge, in the winding of the element that owns it, so
+     *              that rotating the tangent {@code (dr, dz)} by -90 degrees to
+     *              {@code (dz, -dr)} points <em>out</em> of the solid
+     * @param owner the element each edge belongs to, same order
+     * @param nodes every node appearing on the surface, ascending and without repeats
+     */
+    public record Surface(int[] edges, int[] owner, int[] nodes) {
+
+        public int edgeCount() {
+            return owner.length;
+        }
+    }
+
+    /**
+     * Finds the free surface from connectivity alone.
+     *
+     * <p>Topological rather than geometric, which is what makes it work on a mesh nobody
+     * designed: an interior edge is shared by two elements and a surface edge is not, and that
+     * is true for a hole, a crack, a body of several disconnected pieces, or whatever a
+     * polygon mesher produced. A traversal that walked the outline instead would need to know
+     * in advance how many outlines there were.
+     *
+     * <p>Emitted in element order rather than in map order, so two runs on the same mesh
+     * produce the same surface in the same sequence. Contact forces are accumulated in this
+     * order and floating-point addition is not associative, so the ordering is part of the
+     * solver being reproducible rather than a tidiness preference.
+     */
+    public Surface surface() {
+        return surface(null);
+    }
+
+    /**
+     * The free surface of what is left when some elements are ignored.
+     *
+     * <p>The reason this takes an argument at all is erosion. Deleting an element exposes the
+     * faces it was hiding: a body eroded through the middle has two new free surfaces that
+     * were interior a moment earlier, and anything that kept using the original surface would
+     * let the two halves pass straight through one another. Recomputing with the dead elements
+     * skipped is the whole of the update.
+     *
+     * @param skip one flag per element, or null to include them all
+     */
+    public Surface surface(boolean[] skip) {
+        final java.util.HashMap<Long, Integer> count = new java.util.HashMap<>();
+        for (int e = 0; e < elementCount; e++) {
+            if (skip != null && skip[e]) continue;
+            for (int k = 0; k < 4; k++) {
+                count.merge(edgeKey(conn[e * 4 + k], conn[e * 4 + (k + 1) % 4]), 1, Integer::sum);
+            }
+        }
+
+        int free = 0;
+        for (int v : count.values()) if (v == 1) free++;
+
+        final int[] edges = new int[2 * free];
+        final int[] owner = new int[free];
+        final boolean[] onSurface = new boolean[nodeCount];
+        int at = 0;
+        for (int e = 0; e < elementCount; e++) {
+            if (skip != null && skip[e]) continue;
+            for (int k = 0; k < 4; k++) {
+                final int a = conn[e * 4 + k];
+                final int b = conn[e * 4 + (k + 1) % 4];
+                if (count.get(edgeKey(a, b)) != 1) continue;
+                edges[2 * at] = a;
+                edges[2 * at + 1] = b;
+                owner[at] = e;
+                at++;
+                onSurface[a] = true;
+                onSurface[b] = true;
+            }
+        }
+
+        int n = 0;
+        for (boolean b : onSurface) if (b) n++;
+        final int[] nodes = new int[n];
+        int m = 0;
+        for (int i = 0; i < nodeCount; i++) if (onSurface[i]) nodes[m++] = i;
+
+        return new Surface(edges, owner, nodes);
+    }
+
+    private static long edgeKey(int a, int b) {
+        return (long) Math.min(a, b) << 32 | Math.max(a, b);
+    }
+
     private void checkOrientation() {
         for (int e = 0; e < elementCount; e++) {
             if (signedArea(e) <= 0.0) {
